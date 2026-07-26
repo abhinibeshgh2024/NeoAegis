@@ -160,7 +160,7 @@ export default function Dashboard({ records, selectedEmail, onSelectEmail }: Das
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `aegis_forensic_threat_report_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute("download", `neoaegis_threat_report_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -172,7 +172,7 @@ export default function Dashboard({ records, selectedEmail, onSelectEmail }: Das
     if (!target) return;
     
     const reportContent = `========================================================================
-🛡️ AEGIS SENTINEL FORENSIC INCIDENT DOSSIER
+🛡️ NEOAEGIS FORENSIC INCIDENT DOSSIER
 ========================================================================
 Generated At: ${new Date().toISOString()}
 Target ID: ${target.id.toUpperCase()}
@@ -230,7 +230,7 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `aegis_forensic_incident_${target.id}.md`);
+    link.setAttribute("download", `neoaegis_incident_${target.id}.md`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

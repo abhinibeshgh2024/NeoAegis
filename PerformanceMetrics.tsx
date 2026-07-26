@@ -150,7 +150,7 @@ export default function PerformanceMetrics({ records }: PerformanceMetricsProps)
   // Export performance evaluation report
   const handleExportPerformanceReport = () => {
     const report = `========================================================================
-🛡️ AEGIS SENTINEL SYSTEM ACCURACY & PERFORMANCE EVALUATION REPORT
+🛡️ NEOAEGIS SYSTEM ACCURACY & PERFORMANCE EVALUATION REPORT
 ========================================================================
 Report Generated At: ${new Date().toISOString()}
 Evaluated Dataset Size: ${liveMetrics.total} Samples
@@ -197,14 +197,14 @@ Image OCR Processing:      82 ms
    - Precision: ${(benchmark.moduleScores.imageOcr.precision * 100).toFixed(1)}% | Recall: ${(benchmark.moduleScores.imageOcr.recall * 100).toFixed(1)}% | F1: ${(benchmark.moduleScores.imageOcr.f1 * 100).toFixed(1)}%
 
 ========================================================================
-Aegis Sentinel System Verification Audit - All Rights Reserved
+NeoAegis System Verification Audit - All Rights Reserved
 ========================================================================`;
 
     const blob = new Blob([report], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `aegis_system_performance_f1_report_${new Date().toISOString().split('T')[0]}.md`;
+    link.download = `neoaegis_system_performance_f1_report_${new Date().toISOString().split('T')[0]}.md`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

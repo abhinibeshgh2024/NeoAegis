@@ -134,19 +134,19 @@ export default function App() {
         <header className="flex flex-col md:flex-row md:items-center justify-between p-6 bg-[#0c0c0e] border border-slate-800 rounded-3xl gap-4" id="main-header">
           <div className="flex items-center space-x-3.5">
             <div className="w-11 h-11 bg-indigo-600 rounded-xl flex items-center justify-center font-serif text-2xl font-bold text-white shadow-lg shadow-indigo-950/40">
-              S
+              N
             </div>
             <div>
               <div className="flex items-center space-x-2">
                 <h1 className="text-xl font-serif italic text-white tracking-tight leading-none">
-                  Aegis Sentinel v2.6
+                  NeoAegis
                 </h1>
                 <span className="px-2 py-0.5 bg-indigo-500/10 border border-slate-850 text-[9px] font-mono text-indigo-400 rounded">
                   Enterprise Sandbox
                 </span>
               </div>
               <p className="text-[10px] uppercase tracking-[0.2em] text-indigo-400 font-semibold mt-1">
-                Advanced Localized Threat Detection & SECURE AUDITING
+                Advanced Mail Analyzer and Assistant
               </p>
             </div>
           </div>
@@ -367,7 +367,7 @@ export default function App() {
       </div>
 
       <footer className="footer max-w-7xl mx-auto py-8 px-4 text-center text-xs font-mono text-slate-500">
-        <p>&copy; 2026 Aegis Sentinel &bull; Ultra Secure Local Spam & Phishing Radar Ecosystem.</p>
+        <p>&copy; 2026 NeoAegis &bull; Advanced Mail Analyzer and Assistant.</p>
         <p className="mt-1">Built with React & Tailwind CSS. Fully standalone sandbox verification.</p>
       </footer>
 

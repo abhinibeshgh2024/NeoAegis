@@ -1,6 +1,6 @@
 {
-  "name": "Email Spam & Phishing Analyzer",
-  "description": "An advanced client-side email spam, phishing, and image-based spam analyzer with localized RAG assistant, real-time metrics, and batch CSV analysis.",
+  "name": "NeoAegis",
+  "description": "NeoAegis - Advanced Mail Analyzer and Assistant",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
