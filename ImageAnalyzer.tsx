@@ -199,41 +199,41 @@ export default function ImageAnalyzer() {
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in" id="image-analyzer-view">
       
       {/* Left panel: Image drag and drop OR Preset loader */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 lg:col-span-5 space-y-5 flex flex-col justify-between">
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-6 lg:col-span-5 space-y-5 flex flex-col justify-between shadow-3xs">
         <div className="space-y-4">
           <div>
-            <h3 className="text-base font-display font-medium text-white flex items-center space-x-2">
-              <Image className="text-indigo-400 h-5 w-5" />
+            <h3 className="text-base font-display font-semibold text-slate-900 flex items-center space-x-2">
+              <Image className="text-indigo-600 h-5 w-5" />
               <span>SPAM IMAGE TELEMETRY EXPOSER</span>
             </h3>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-slate-500 mt-1">
               Test how modern flyers, coupons, and scanned invoice JPGs are parsed to subvert textual keyword firewalls.
             </p>
           </div>
 
           {/* Quick interactive items */}
           <div>
-            <span className="text-[10px] font-mono text-slate-500 uppercase">LOAD METRIC PRESETS INSTANTLY</span>
+            <span className="text-[10px] font-mono text-slate-400 uppercase">LOAD METRIC PRESETS INSTANTLY</span>
             <div className="grid grid-cols-3 gap-2 mt-2">
               {PRESET_SPAM_IMAGES.map(p => (
                 <button
                   key={p.id}
                   onClick={() => changePreset(p)}
-                  className={`px-2 py-2 text-3xs font-mono rounded-lg border text-left transition-all duration-200 ${
+                  className={`px-2 py-2 text-3xs font-mono rounded-lg border text-left transition-all duration-200 cursor-pointer ${
                     activePreset.id === p.id && !customImage
-                      ? 'border-indigo-500 bg-indigo-500/10 text-indigo-400 font-bold'
-                      : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-white'
+                      ? 'border-indigo-200 bg-indigo-50 text-indigo-700 font-bold shadow-2xs'
+                      : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900 shadow-3xs'
                   }`}
                 >
                   <span className="block truncate font-semibold">{p.title}</span>
-                  <span className="block text-[9px] text-slate-500 truncate mt-0.5">{p.id.toUpperCase()}</span>
+                  <span className="block text-[9px] text-slate-400 truncate mt-0.5">{p.id.toUpperCase()}</span>
                 </button>
               ))}
             </div>
           </div>
 
           {/* Image visual canvas */}
-          <div className="relative bg-slate-950 border border-slate-800 rounded-xl overflow-hidden aspect-video flex items-center justify-center group">
+          <div className="relative bg-slate-950 border border-slate-200 rounded-xl overflow-hidden aspect-video flex items-center justify-center group shadow-xs">
             {analyzing ? (
               <div className="text-center space-y-2">
                 <RefreshCw className="h-8 w-8 text-indigo-400 animate-spin mx-auto" />
@@ -249,18 +249,18 @@ export default function ImageAnalyzer() {
                 />
                 
                 {/* HUD Matrix overlays */}
-                <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent p-4 flex flex-col justify-between pointer-events-none">
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/20 to-transparent p-4 flex flex-col justify-between pointer-events-none">
                   <div className="flex justify-between items-start">
-                    <span className="px-2 py-0.5 bg-indigo-500/8c backdrop-blur-md text-[9px] font-mono rounded text-white border border-indigo-400/30">
+                    <span className="px-2 py-0.5 bg-indigo-600/90 backdrop-blur-md text-[9px] font-mono rounded text-white border border-indigo-400/30">
                       OCR DETECT: ON
                     </span>
-                    <span className="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-[9px] font-mono rounded text-slate-400">
+                    <span className="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-[9px] font-mono rounded text-slate-300">
                       SCALE: {activePreset.metadataSizeKb} KB
                     </span>
                   </div>
 
                   <div className="space-y-1">
-                    <span className="text-[10px] font-mono text-indigo-400 block tracking-widest uppercase">
+                    <span className="text-[10px] font-mono text-indigo-300 block tracking-widest uppercase">
                       // RASTER INSPECTOR ENGINE
                     </span>
                     <span className="text-xs font-sans font-medium text-white block truncate">
@@ -284,11 +284,11 @@ export default function ImageAnalyzer() {
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="w-full py-4 border-2 border-dashed border-slate-800 bg-slate-950/50 hover:bg-slate-950 hover:border-indigo-500/40 rounded-xl transition duration-200 text-center flex flex-col items-center justify-center space-y-1 group"
+            className="w-full py-4 border-2 border-dashed border-slate-200 bg-white hover:bg-slate-50 hover:border-indigo-400 rounded-xl transition duration-200 text-center flex flex-col items-center justify-center space-y-1 group cursor-pointer shadow-3xs"
           >
-            <Upload className="h-5 w-5 text-slate-500 group-hover:text-indigo-400 transition-colors" />
-            <span className="text-xs font-mono text-slate-300">Drag & Drop or click to upload target asset</span>
-            <span className="text-[10px] font-mono text-slate-500">Supports PNG, JPG, WEBP (No client data uploaded)</span>
+            <Upload className="h-5 w-5 text-slate-400 group-hover:text-indigo-600 transition-colors" />
+            <span className="text-xs font-mono text-slate-700">Drag & Drop or click to upload target asset</span>
+            <span className="text-[10px] font-mono text-slate-400">Supports PNG, JPG, WEBP (No client data uploaded)</span>
           </button>
         </div>
 
@@ -298,14 +298,14 @@ export default function ImageAnalyzer() {
       <div className="space-y-6 lg:col-span-7">
         
         {/* Dynamic Image Telemetry parameters */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-6 space-y-6 shadow-3xs">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-200">
             <div className="flex items-center space-x-2">
-              <Sliders className="h-5 w-5 text-indigo-400" />
-              <h3 className="text-sm font-mono font-medium text-white">OCR TEXT EXTRACTION & SPECTRUM DATA</h3>
+              <Sliders className="h-5 w-5 text-indigo-600" />
+              <h3 className="text-sm font-mono font-bold text-slate-900">OCR TEXT EXTRACTION & SPECTRUM DATA</h3>
             </div>
             <span className={`px-2.5 py-0.5 text-xs font-mono rounded-lg font-bold ${
-              (activePreset.metrics.spamScore || 0) > 50 ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              (activePreset.metrics.spamScore || 0) > 50 ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
             }`}>
               Image Threat Rating: {activePreset.metrics.spamScore || 0}%
             </span>
@@ -313,9 +313,9 @@ export default function ImageAnalyzer() {
 
           {/* OCR text capture block */}
           <div className="space-y-2">
-            <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider block">EXTRACTED TEXT STRINGS (AUTOMATED OCR)</span>
-            <div className="bg-slate-950 border border-slate-800 p-4 rounded-xl font-mono text-xs text-slate-300 leading-relaxed border-l-2 border-l-indigo-500 relative">
-              <span className="absolute bottom-2 right-2 text-[9px] text-slate-600">CONFIDENCE: PASS 94%</span>
+            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">EXTRACTED TEXT STRINGS (AUTOMATED OCR)</span>
+            <div className="bg-white border border-slate-200 p-4 rounded-xl font-mono text-xs text-slate-700 leading-relaxed border-l-2 border-l-indigo-500 relative shadow-3xs">
+              <span className="absolute bottom-2 right-2 text-[9px] text-slate-400">CONFIDENCE: PASS 94%</span>
               &ldquo;{activePreset.ocrDetectedText}&rdquo;
             </div>
           </div>
@@ -323,81 +323,81 @@ export default function ImageAnalyzer() {
           {/* Image spectrum breakdown */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             
-            <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80 text-center">
-              <span className="text-[10px] font-mono text-slate-500">RED GAIN</span>
-              <div className="w-full bg-slate-900 h-1.5 rounded-full mt-2 overflow-hidden">
+            <div className="bg-white p-3 rounded-lg border border-slate-200 text-center shadow-3xs">
+              <span className="text-[10px] font-mono text-slate-400">RED GAIN</span>
+              <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div className="bg-red-500 h-full" style={{ width: `${activePreset.colorSpectrum.red}%` }}></div>
               </div>
-              <span className="text-xs font-mono text-slate-300 mt-1 block">{activePreset.colorSpectrum.red}%</span>
+              <span className="text-xs font-mono text-slate-700 mt-1 block">{activePreset.colorSpectrum.red}%</span>
             </div>
 
-            <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80 text-center">
-              <span className="text-[10px] font-mono text-slate-500">YELLOW GAIN</span>
-              <div className="w-full bg-slate-900 h-1.5 rounded-full mt-2 overflow-hidden">
+            <div className="bg-white p-3 rounded-lg border border-slate-200 text-center shadow-3xs">
+              <span className="text-[10px] font-mono text-slate-400">YELLOW GAIN</span>
+              <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div className="bg-yellow-500 h-full" style={{ width: `${activePreset.colorSpectrum.yellow}%` }}></div>
               </div>
-              <span className="text-xs font-mono text-slate-300 mt-1 block">{activePreset.colorSpectrum.yellow}%</span>
+              <span className="text-xs font-mono text-slate-700 mt-1 block">{activePreset.colorSpectrum.yellow}%</span>
             </div>
 
-            <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80 text-center">
-              <span className="text-[10px] font-mono text-slate-500">GREEN GAIN</span>
-              <div className="w-full bg-slate-900 h-1.5 rounded-full mt-2 overflow-hidden">
+            <div className="bg-white p-3 rounded-lg border border-slate-200 text-center shadow-3xs">
+              <span className="text-[10px] font-mono text-slate-400">GREEN GAIN</span>
+              <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div className="bg-emerald-500 h-full" style={{ width: `${activePreset.colorSpectrum.green}%` }}></div>
               </div>
-              <span className="text-xs font-mono text-slate-300 mt-1 block">{activePreset.colorSpectrum.green}%</span>
+              <span className="text-xs font-mono text-slate-700 mt-1 block">{activePreset.colorSpectrum.green}%</span>
             </div>
 
-            <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80 text-center">
-              <span className="text-[10px] font-mono text-slate-500">BLUE GAIN</span>
-              <div className="w-full bg-slate-900 h-1.5 rounded-full mt-2 overflow-hidden">
+            <div className="bg-white p-3 rounded-lg border border-slate-200 text-center shadow-3xs">
+              <span className="text-[10px] font-mono text-slate-400">BLUE GAIN</span>
+              <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
                 <div className="bg-indigo-500 h-full" style={{ width: `${activePreset.colorSpectrum.blue}%` }}></div>
               </div>
-              <span className="text-xs font-mono text-slate-300 mt-1 block">{activePreset.colorSpectrum.blue}%</span>
+              <span className="text-xs font-mono text-slate-700 mt-1 block">{activePreset.colorSpectrum.blue}%</span>
             </div>
 
           </div>
 
           {/* Raster Diagnostic Indices */}
           <div className="space-y-3 pt-2">
-            <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider block">ANOMALY WEIGHT ASSIGNMENTS</span>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">ANOMALY WEIGHT ASSIGNMENTS</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               
-              <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between">
+              <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
                 <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-200 block">Saturated Color Warnings</span>
-                  <span className="text-[10px] font-mono text-slate-500">Presence of extreme layout color prompts</span>
+                  <span className="text-xs font-sans text-slate-800 block">Saturated Color Warnings</span>
+                  <span className="text-[10px] font-mono text-slate-400">Presence of extreme layout color prompts</span>
                 </div>
-                <span className={`text-sm font-mono font-bold ${activePreset.detectedMetrics.colorSpikeDanger > 60 ? 'text-red-400' : 'text-slate-400'}`}>
+                <span className={`text-sm font-mono font-bold ${activePreset.detectedMetrics.colorSpikeDanger > 60 ? 'text-red-600' : 'text-slate-500'}`}>
                   {activePreset.detectedMetrics.colorSpikeDanger}%
                 </span>
               </div>
 
-              <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between">
+              <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
                 <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-200 block">OCR Text Area Density</span>
-                  <span className="text-[10px] font-mono text-slate-500">Ratio of lettering overlay bounding boxes</span>
+                  <span className="text-xs font-sans text-slate-800 block">OCR Text Area Density</span>
+                  <span className="text-[10px] font-mono text-slate-400">Ratio of lettering overlay bounding boxes</span>
                 </div>
-                <span className="text-sm font-mono text-slate-300 font-bold">
+                <span className="text-sm font-mono text-slate-700 font-bold">
                   {activePreset.detectedMetrics.textDensity}%
                 </span>
               </div>
 
-              <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between">
+              <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
                 <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-200 block">Metadata Age Obfuscation</span>
-                  <span className="text-[10px] font-mono text-slate-500">Exposes lack of camera / software model stamps</span>
+                  <span className="text-xs font-sans text-slate-800 block">Metadata Age Obfuscation</span>
+                  <span className="text-[10px] font-mono text-slate-400">Exposes lack of camera / software model stamps</span>
                 </div>
-                <span className="text-sm font-mono text-amber-400 font-bold">
+                <span className="text-sm font-mono text-amber-700 font-bold">
                   {activePreset.detectedMetrics.obfuscationScore}%
                 </span>
               </div>
 
-              <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between">
+              <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
                 <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-200 block">Lure Match Vector Index</span>
-                  <span className="text-[10px] font-mono text-slate-500">Confidence matching bait template words</span>
+                  <span className="text-xs font-sans text-slate-800 block">Lure Match Vector Index</span>
+                  <span className="text-[10px] font-mono text-slate-400">Confidence matching bait template words</span>
                 </div>
-                <span className={`text-sm font-mono font-bold ${activePreset.detectedMetrics.phishingLureMatch > 60 ? 'text-red-400' : 'text-emerald-400'}`}>
+                <span className={`text-sm font-mono font-bold ${activePreset.detectedMetrics.phishingLureMatch > 60 ? 'text-red-600' : 'text-emerald-600'}`}>
                   {activePreset.detectedMetrics.phishingLureMatch}%
                 </span>
               </div>
@@ -407,11 +407,11 @@ export default function ImageAnalyzer() {
 
           {/* QR Code Warning Callout */}
           {activePreset.qrCodeDetected && (
-            <div className="bg-red-950/20 border border-red-500/20 p-4 rounded-xl flex items-start space-x-3 text-xs text-red-300">
-              <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+            <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-start space-x-3 text-xs text-red-800 shadow-3xs animate-fade-in">
+              <ShieldAlert className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold font-sans block text-sm">QR Code Phishing (Quishing) Vector Detected</span>
-                <p className="mt-1 leading-relaxed text-red-400">
+                <span className="font-bold font-sans block text-sm text-red-700">QR Code Phishing (Quishing) Vector Detected</span>
+                <p className="mt-1 leading-relaxed text-red-700">
                   This image contains a highly contrastive 2D matrix barcode (QR Code). Attackers leverage QR codes within flyers to redirect sandbox recipients directly off secure mail clients, guiding victims onto fraudulent financial validation forms hosted outside standard email security proxies.
                 </p>
               </div>

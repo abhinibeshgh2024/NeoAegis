@@ -235,6 +235,39 @@ export function analyzeEmail(subject: string, body: string, headers: string): Sp
   if (senderRecipientDiscrepancy) { baseSpamScore += 15; basePhishingLikelihood += 20; }
   if (unusualHoursTrigger) { baseSpamScore += 10; }
 
+  // Read and apply custom local rules from localStorage if running in browser
+  let localRulesTriggered = 0;
+  let localRulesEvaluated = 0;
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = window.localStorage.getItem('custom_heuristic_rules');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        parsed.forEach((rule: any) => {
+          localRulesEvaluated++;
+          const textToSearch = 
+            rule.target === 'subject' ? subject :
+            rule.target === 'headers' ? headers : body;
+          
+          try {
+            const rx = new RegExp(rule.regex, 'i');
+            if (rx.test(textToSearch)) {
+              localRulesTriggered++;
+              baseSpamScore += Number(rule.weight);
+              if (rule.weight > 0) {
+                basePhishingLikelihood += Math.round(Number(rule.weight) * 0.8);
+              }
+            }
+          } catch (e) {
+            // Invalid regex
+          }
+        });
+      }
+    } catch (e) {
+      // Ignore
+    }
+  }
+
   const spamScore = Math.min(99, Math.max(2, baseSpamScore));
   const phishingLikelihood = Math.min(99, Math.max(1, basePhishingLikelihood));
 
@@ -251,8 +284,8 @@ export function analyzeEmail(subject: string, body: string, headers: string): Sp
   const defenseRating = Math.round(100 - (spamScore * 0.6) - (phishingLikelihood * 0.4));
 
   // Compute rule diagnostics
-  const rulesEvaluatedCount = 37;
-  let rulesTriggeredCount = 0;
+  let rulesEvaluatedCount = 37 + localRulesEvaluated;
+  let rulesTriggeredCount = localRulesTriggered;
   if (financialSensationIndex > 20) rulesTriggeredCount++;
   if (urgencyCoefficient > 20) rulesTriggeredCount++;
   if (authorityMimicryIndex > 20) rulesTriggeredCount++;

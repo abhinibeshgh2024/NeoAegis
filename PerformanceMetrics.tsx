@@ -221,16 +221,16 @@ NeoAegis System Verification Audit - All Rights Reserved
     <div className="space-y-8 animate-fade-in" id="performance-tab">
       
       {/* Header Banner & Action Control */}
-      <div className="bg-[#0c0c0e]/80 border border-slate-800/80 rounded-2xl p-6 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 shadow-3xs">
         <div>
           <div className="flex items-center space-x-2">
-            <Target className="w-5 h-5 text-indigo-400" />
-            <h2 className="text-base font-serif italic text-white">System Performance & Precision Matrix</h2>
-            <span className="px-2 py-0.5 bg-indigo-500/10 border border-slate-800 text-[9px] font-mono text-indigo-400 rounded uppercase">
+            <Target className="w-5 h-5 text-indigo-600" />
+            <h2 className="text-base font-serif italic text-slate-900">System Performance & Precision Matrix</h2>
+            <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-100 text-[9px] font-mono text-indigo-600 rounded uppercase font-bold">
               F1 Benchmark Suite
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-slate-500 mt-1">
             Real-time accuracy calculations, confusion matrix, ROC AUC curve, and sub-engine performance breakdowns across {liveMetrics.total} evaluated mail items.
           </p>
         </div>
@@ -239,11 +239,11 @@ NeoAegis System Verification Audit - All Rights Reserved
           <button
             onClick={handleRunBenchmark}
             disabled={isRunningBenchmark}
-            className={`px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-lg shadow-indigo-950/40 ${isRunningBenchmark ? 'opacity-75 cursor-not-allowed' : ''}`}
+            className={`px-4 py-2.5 bg-indigo-600 hover:bg-indigo-750 text-white text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-xs ${isRunningBenchmark ? 'opacity-75 cursor-not-allowed' : ''}`}
           >
             {isRunningBenchmark ? (
               <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
                 <span>Benchmarking ({benchmarkProgress}%)...</span>
               </>
             ) : (
@@ -256,9 +256,9 @@ NeoAegis System Verification Audit - All Rights Reserved
 
           <button
             onClick={handleExportPerformanceReport}
-            className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer"
+            className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-3xs"
           >
-            <Download className="w-4 h-4" />
+            <Download className="w-4 h-4 text-slate-500" />
             <span>Export Metrics Report (.md)</span>
           </button>
         </div>
@@ -266,14 +266,14 @@ NeoAegis System Verification Audit - All Rights Reserved
 
       {/* Progress Bar during benchmark run */}
       {isRunningBenchmark && (
-        <div className="bg-[#09090b] border border-indigo-500/30 rounded-xl p-4 animate-pulse">
-          <div className="flex items-center justify-between text-xs font-mono text-indigo-400 mb-2">
+        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 animate-pulse">
+          <div className="flex items-center justify-between text-xs font-mono text-indigo-700 mb-2">
             <span>// EXECUTING SYSTEM PERFORMANCE BENCHMARK (500 SYNTHETIC TEST CASES)</span>
-            <span>{benchmarkProgress}%</span>
+            <span className="font-bold">{benchmarkProgress}%</span>
           </div>
-          <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
+          <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
             <div 
-              className="bg-indigo-500 h-full transition-all duration-200" 
+              className="bg-indigo-600 h-full transition-all duration-200" 
               style={{ width: `${benchmarkProgress}%` }}
             ></div>
           </div>
@@ -284,16 +284,16 @@ NeoAegis System Verification Audit - All Rights Reserved
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
         {/* F1 Score Card */}
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">F1 Score</span>
-            <Sparkles className="w-4 h-4 text-indigo-400" />
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden shadow-3xs">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold">F1 Score</span>
+            <Sparkles className="w-4 h-4 text-indigo-600" />
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-serif italic text-indigo-400">
+            <span className="text-3xl font-serif italic text-indigo-700 font-bold">
               {(liveMetrics.f1Score * 100).toFixed(1)}%
             </span>
-            <span className="text-xs text-emerald-400 font-mono flex items-center">
+            <span className="text-xs text-emerald-600 font-mono flex items-center font-bold">
               <ArrowUpRight className="w-3 h-3" />
               Optimal
             </span>
@@ -304,16 +304,16 @@ NeoAegis System Verification Audit - All Rights Reserved
         </div>
 
         {/* Accuracy Card */}
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">Overall Accuracy</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden shadow-3xs">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold">Overall Accuracy</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-serif italic text-emerald-400">
+            <span className="text-3xl font-serif italic text-emerald-700 font-bold">
               {(liveMetrics.accuracy * 100).toFixed(1)}%
             </span>
-            <span className="text-xs text-slate-400 font-mono">
+            <span className="text-xs text-slate-500 font-mono">
               ({liveMetrics.tp + liveMetrics.tn}/{liveMetrics.total})
             </span>
           </div>
@@ -323,16 +323,16 @@ NeoAegis System Verification Audit - All Rights Reserved
         </div>
 
         {/* Precision Card */}
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">Precision</span>
-            <Target className="w-4 h-4 text-amber-400" />
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden shadow-3xs">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold">Precision</span>
+            <Target className="w-4 h-4 text-amber-600" />
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-serif italic text-amber-400">
+            <span className="text-3xl font-serif italic text-amber-700 font-bold">
               {(liveMetrics.precision * 100).toFixed(1)}%
             </span>
-            <span className="text-xs text-slate-400 font-mono">
+            <span className="text-xs text-slate-500 font-mono">
               (FPR: {(liveMetrics.falsePositiveRate * 100).toFixed(2)}%)
             </span>
           </div>
@@ -342,16 +342,16 @@ NeoAegis System Verification Audit - All Rights Reserved
         </div>
 
         {/* Recall Card */}
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">Recall / Sensitivity</span>
-            <Shield className="w-4 h-4 text-blue-400" />
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden shadow-3xs">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold">Recall / Sensitivity</span>
+            <Shield className="w-4 h-4 text-blue-600" />
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-serif italic text-blue-400">
+            <span className="text-3xl font-serif italic text-blue-700 font-bold">
               {(liveMetrics.recall * 100).toFixed(1)}%
             </span>
-            <span className="text-xs text-slate-400 font-mono">
+            <span className="text-xs text-slate-500 font-mono">
               (FNR: {(liveMetrics.falseNegativeRate * 100).toFixed(2)}%)
             </span>
           </div>
@@ -366,17 +366,17 @@ NeoAegis System Verification Audit - All Rights Reserved
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Confusion Matrix (5 cols) */}
-        <div className="lg:col-span-5 bg-[#0c0c0e]/80 border border-slate-800/80 rounded-2xl p-6 flex flex-col justify-between">
+        <div className="lg:col-span-5 bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col justify-between shadow-3xs">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-sm font-serif italic text-slate-200 flex items-center space-x-2">
-                  <GridIcon className="w-4 h-4 text-indigo-400" />
-                  <span>2x2 Confusion Matrix</span>
+                <h3 className="text-sm font-serif italic text-slate-900 flex items-center space-x-2">
+                  <GridIcon className="w-4 h-4 text-indigo-600" />
+                  <span className="font-semibold">2x2 Confusion Matrix</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-1">Classification outcomes for evaluated email dataset</p>
               </div>
-              <span className="px-2 py-0.5 text-[9px] font-mono text-indigo-400 border border-slate-800 rounded bg-indigo-500/5">
+              <span className="px-2 py-0.5 text-[9px] font-mono text-indigo-700 border border-indigo-200 rounded bg-indigo-50 font-bold">
                 REAL DATA
               </span>
             </div>
@@ -384,74 +384,74 @@ NeoAegis System Verification Audit - All Rights Reserved
             <div className="grid grid-cols-2 gap-3 mt-4">
               
               {/* True Positive */}
-              <div className="bg-emerald-950/20 border border-emerald-500/30 p-4 rounded-xl flex flex-col justify-between">
+              <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex flex-col justify-between shadow-3xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-emerald-400 uppercase font-bold">True Positive (TP)</span>
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-[10px] font-mono text-emerald-800 uppercase font-bold">True Positive (TP)</span>
+                  <Check className="w-3.5 h-3.5 text-emerald-600 font-bold" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-emerald-400">{liveMetrics.tp}</span>
-                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">Phishing correctly blocked</p>
+                  <span className="text-2xl font-serif italic text-emerald-700 font-bold">{liveMetrics.tp}</span>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Phishing correctly blocked</p>
                 </div>
               </div>
 
               {/* False Positive */}
-              <div className="bg-amber-950/20 border border-amber-500/30 p-4 rounded-xl flex flex-col justify-between">
+              <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex flex-col justify-between shadow-3xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-amber-400 uppercase font-bold">False Positive (FP)</span>
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-[10px] font-mono text-amber-800 uppercase font-bold">False Positive (FP)</span>
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-amber-400">{liveMetrics.fp}</span>
-                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">Legit flagged as spam</p>
+                  <span className="text-2xl font-serif italic text-amber-700 font-bold">{liveMetrics.fp}</span>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Legit flagged as spam</p>
                 </div>
               </div>
 
               {/* False Negative */}
-              <div className="bg-red-950/20 border border-red-500/30 p-4 rounded-xl flex flex-col justify-between">
+              <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex flex-col justify-between shadow-3xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-red-400 uppercase font-bold">False Negative (FN)</span>
-                  <XCircle className="w-3.5 h-3.5 text-red-400" />
+                  <span className="text-[10px] font-mono text-red-800 uppercase font-bold">False Negative (FN)</span>
+                  <XCircle className="w-3.5 h-3.5 text-red-600" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-red-400">{liveMetrics.fn}</span>
-                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">Phishing missed</p>
+                  <span className="text-2xl font-serif italic text-red-700 font-bold">{liveMetrics.fn}</span>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Phishing missed</p>
                 </div>
               </div>
 
               {/* True Negative */}
-              <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
+              <div className="bg-white border border-slate-200 p-4 rounded-xl flex flex-col justify-between shadow-3xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-slate-400 uppercase font-bold">True Negative (TN)</span>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
+                  <span className="text-[10px] font-mono text-slate-600 uppercase font-bold">True Negative (TN)</span>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-slate-500" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-slate-200">{liveMetrics.tn}</span>
-                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">Legit correctly allowed</p>
+                  <span className="text-2xl font-serif italic text-slate-800 font-bold">{liveMetrics.tn}</span>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Legit correctly allowed</p>
                 </div>
               </div>
 
             </div>
           </div>
 
-          <div className="mt-4 pt-4 border-t border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400">
-            <span>False Positive Rate (FPR): <strong className="text-amber-400">{(liveMetrics.falsePositiveRate * 100).toFixed(2)}%</strong></span>
-            <span>False Negative Rate (FNR): <strong className="text-red-400">{(liveMetrics.falseNegativeRate * 100).toFixed(2)}%</strong></span>
+          <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-between text-[11px] font-mono text-slate-500">
+            <span>False Positive Rate (FPR): <strong className="text-amber-700">{(liveMetrics.falsePositiveRate * 100).toFixed(2)}%</strong></span>
+            <span>False Negative Rate (FNR): <strong className="text-red-600">{(liveMetrics.falseNegativeRate * 100).toFixed(2)}%</strong></span>
           </div>
         </div>
 
         {/* ROC AUC Curve Chart (7 cols) */}
-        <div className="lg:col-span-7 bg-[#0c0c0e]/80 border border-slate-800/80 rounded-2xl p-6 flex flex-col justify-between">
+        <div className="lg:col-span-7 bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col justify-between shadow-3xs">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-sm font-serif italic text-slate-200 flex items-center space-x-2">
-                  <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <span>ROC Curve & AUC Score</span>
+                <h3 className="text-sm font-serif italic text-slate-900 flex items-center space-x-2">
+                  <TrendingUp className="w-4 h-4 text-emerald-600" />
+                  <span className="font-semibold">ROC Curve & AUC Score</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-1">True Positive Rate vs. False Positive Rate (AUC = {benchmark.rocAUC})</p>
               </div>
-              <span className="px-2 py-0.5 text-[9px] font-mono text-emerald-400 border border-slate-800 rounded bg-emerald-500/5">
+              <span className="px-2 py-0.5 text-[9px] font-mono text-emerald-700 border border-emerald-200 rounded bg-emerald-50 font-bold">
                 AUC: {benchmark.rocAUC}
               </span>
             </div>
@@ -459,11 +459,11 @@ NeoAegis System Verification Audit - All Rights Reserved
             <div className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={ROC_CURVE_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="fpr" stroke="#64748b" tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} label={{ value: 'FPR', position: 'insideBottomRight', offset: -5, fill: '#64748b', fontSize: 10 }} />
                   <YAxis stroke="#64748b" tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} label={{ value: 'TPR', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 10 }} />
                   <Tooltip 
-                    contentStyle={{ backgroundColor: '#0c0c0e', borderColor: '#27272a', color: '#fff', fontSize: '11px' }}
+                    contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#0f172a', fontSize: '11px' }}
                     formatter={(val: any) => [`${(Number(val) * 100).toFixed(1)}%`, 'Rate']}
                   />
                   <Area type="monotone" dataKey="tpr" stroke="#10b981" fill="#10b981" fillOpacity={0.15} strokeWidth={2} name="True Positive Rate" />
@@ -473,7 +473,7 @@ NeoAegis System Verification Audit - All Rights Reserved
           </div>
 
           <div className="mt-2 text-[11px] font-mono text-slate-500 flex items-center justify-between">
-            <span>ROC Area Under Curve: <strong className="text-emerald-400">{benchmark.rocAUC}</strong> (Near Perfect Separability)</span>
+            <span>ROC Area Under Curve: <strong className="text-emerald-600">{benchmark.rocAUC}</strong> (Near Perfect Separability)</span>
             <span>Target Threshold: 0.50 Spam Cutoff</span>
           </div>
         </div>
@@ -481,16 +481,16 @@ NeoAegis System Verification Audit - All Rights Reserved
       </div>
 
       {/* Sub-Module Performance Breakdown */}
-      <div className="bg-[#0c0c0e]/80 border border-slate-800/80 rounded-2xl p-6 space-y-6">
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-4">
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-6 shadow-3xs">
+        <div className="flex items-center justify-between border-b border-slate-200 pb-4">
           <div>
-            <h3 className="text-sm font-serif italic text-white flex items-center space-x-2">
-              <Layers className="w-4 h-4 text-indigo-400" />
-              <span>Sub-System Detection Engine Metrics Comparison</span>
+            <h3 className="text-sm font-serif italic text-slate-900 flex items-center space-x-2">
+              <Layers className="w-4 h-4 text-indigo-600" />
+              <span className="font-semibold">Sub-System Detection Engine Metrics Comparison</span>
             </h3>
-            <p className="text-xs text-slate-400 mt-1">Comparing Precision, Recall, and F1 Score across system modules</p>
+            <p className="text-xs text-slate-500 mt-1">Comparing Precision, Recall, and F1 Score across system modules</p>
           </div>
-          <span className="text-[10px] font-mono text-slate-500">4 Core Modules Active</span>
+          <span className="text-[10px] font-mono text-slate-400 font-bold">4 Core Modules Active</span>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
@@ -498,57 +498,57 @@ NeoAegis System Verification Audit - All Rights Reserved
           <div className="lg:col-span-7 h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={moduleBarData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
-                <YAxis domain={[80, 100]} stroke="#64748b" fontSize={11} />
-                <Tooltip contentStyle={{ backgroundColor: '#0c0c0e', borderColor: '#27272a', color: '#fff', fontSize: '11px' }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="name" stroke="#475569" fontSize={11} />
+                <YAxis domain={[80, 100]} stroke="#475569" fontSize={11} />
+                <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#0f172a', fontSize: '11px' }} />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
-                <Bar dataKey="f1" name="F1 Score (%)" fill="#818cf8" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="precision" name="Precision (%)" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="recall" name="Recall (%)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="f1" name="F1 Score (%)" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="precision" name="Precision (%)" fill="#d97706" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="recall" name="Recall (%)" fill="#2563eb" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
 
           <div className="lg:col-span-5 space-y-3">
             
-            <div className="bg-[#09090b] p-3 rounded-xl border border-slate-800/80 flex items-center justify-between">
+            <div className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between shadow-3xs">
               <div>
-                <h4 className="text-xs font-semibold text-white">Header & Domain Authentication</h4>
+                <h4 className="text-xs font-bold text-slate-800">Header & Domain Authentication</h4>
                 <p className="text-[10px] text-slate-500 font-mono">SPF, DKIM & DMARC alignment checks</p>
               </div>
               <div className="text-right font-mono">
-                <span className="text-xs font-bold text-emerald-400">{(benchmark.moduleScores.headerDomainAuth.f1 * 100).toFixed(1)}% F1</span>
+                <span className="text-xs font-bold text-emerald-600">{(benchmark.moduleScores.headerDomainAuth.f1 * 100).toFixed(1)}% F1</span>
               </div>
             </div>
 
-            <div className="bg-[#09090b] p-3 rounded-xl border border-slate-800/80 flex items-center justify-between">
+            <div className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between shadow-3xs">
               <div>
-                <h4 className="text-xs font-semibold text-white">SecOps RAG Copilot Knowledge Search</h4>
+                <h4 className="text-xs font-bold text-slate-800">SecOps RAG Copilot Knowledge Search</h4>
                 <p className="text-[10px] text-slate-500 font-mono">Vector corpus semantic matching</p>
               </div>
               <div className="text-right font-mono">
-                <span className="text-xs font-bold text-indigo-400">{(benchmark.moduleScores.ragVerification.f1 * 100).toFixed(1)}% F1</span>
+                <span className="text-xs font-bold text-indigo-600">{(benchmark.moduleScores.ragVerification.f1 * 100).toFixed(1)}% F1</span>
               </div>
             </div>
 
-            <div className="bg-[#09090b] p-3 rounded-xl border border-slate-800/80 flex items-center justify-between">
+            <div className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between shadow-3xs">
               <div>
-                <h4 className="text-xs font-semibold text-white">34-Heuristic Local Rule Engine</h4>
+                <h4 className="text-xs font-bold text-slate-800">34-Heuristic Local Rule Engine</h4>
                 <p className="text-[10px] text-slate-500 font-mono">Rule-based pattern density analysis</p>
               </div>
               <div className="text-right font-mono">
-                <span className="text-xs font-bold text-amber-400">{(benchmark.moduleScores.ruleEngine.f1 * 100).toFixed(1)}% F1</span>
+                <span className="text-xs font-bold text-amber-700">{(benchmark.moduleScores.ruleEngine.f1 * 100).toFixed(1)}% F1</span>
               </div>
             </div>
 
-            <div className="bg-[#09090b] p-3 rounded-xl border border-slate-800/80 flex items-center justify-between">
+            <div className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between shadow-3xs">
               <div>
-                <h4 className="text-xs font-semibold text-white">Image OCR & Spoof Lure Inspector</h4>
+                <h4 className="text-xs font-bold text-slate-800">Image OCR & Spoof Lure Inspector</h4>
                 <p className="text-[10px] text-slate-500 font-mono">Visual color, obfuscation & OCR extraction</p>
               </div>
               <div className="text-right font-mono">
-                <span className="text-xs font-bold text-blue-400">{(benchmark.moduleScores.imageOcr.f1 * 100).toFixed(1)}% F1</span>
+                <span className="text-xs font-bold text-blue-600">{(benchmark.moduleScores.imageOcr.f1 * 100).toFixed(1)}% F1</span>
               </div>
             </div>
 
@@ -560,30 +560,30 @@ NeoAegis System Verification Audit - All Rights Reserved
       {/* Latency & Hardware Efficiency Benchmarks */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl">
-          <div className="flex items-center space-x-2 text-indigo-400 mb-2">
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs">
+          <div className="flex items-center space-x-2 text-indigo-600 mb-2">
             <Zap className="w-4 h-4" />
             <h4 className="text-xs font-semibold uppercase font-mono">Average Processing Latency</h4>
           </div>
-          <span className="text-2xl font-serif italic text-white">{benchmark.avgLatencyMs} ms</span>
+          <span className="text-2xl font-serif italic text-slate-900 font-bold">{benchmark.avgLatencyMs} ms</span>
           <p className="text-[10px] text-slate-500 font-mono mt-1">Per email complete 34-rule + OCR scan</p>
         </div>
 
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl">
-          <div className="flex items-center space-x-2 text-emerald-400 mb-2">
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs">
+          <div className="flex items-center space-x-2 text-emerald-600 mb-2">
             <Cpu className="w-4 h-4" />
             <h4 className="text-xs font-semibold uppercase font-mono">Rule Throughput Rate</h4>
           </div>
-          <span className="text-2xl font-serif italic text-white">2,830 / sec</span>
+          <span className="text-2xl font-serif italic text-slate-900 font-bold">2,830 / sec</span>
           <p className="text-[10px] text-slate-500 font-mono mt-1">Single thread localized JavaScript engine</p>
         </div>
 
-        <div className="bg-[#0c0c0e]/80 border border-slate-800/80 p-5 rounded-2xl">
-          <div className="flex items-center space-x-2 text-amber-400 mb-2">
+        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs">
+          <div className="flex items-center space-x-2 text-amber-600 mb-2">
             <Activity className="w-4 h-4" />
             <h4 className="text-xs font-semibold uppercase font-mono">Vector Lookup Latency</h4>
           </div>
-          <span className="text-2xl font-serif italic text-white">48 ms</span>
+          <span className="text-2xl font-serif italic text-slate-900 font-bold">48 ms</span>
           <p className="text-[10px] text-slate-500 font-mono mt-1">In-memory RAG context retrieval</p>
         </div>
 
