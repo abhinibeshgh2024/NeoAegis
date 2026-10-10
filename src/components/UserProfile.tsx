@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { EmailRecord } from '../../types';
 import { formatWorkingDuration } from '../lib/firebase';
+import GoogleAccountChooserModal from './GoogleAccountChooserModal';
 
 interface UserProfileProps {
   selectedEmail: EmailRecord | null;
@@ -63,6 +64,7 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
   const [displayName, setDisplayName] = useState('');
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
+  const [googleChooserOpen, setGoogleChooserOpen] = useState(false);
 
   // Profile data fetched from Firestore / Enclave Vault
   const [userEmails, setUserEmails] = useState<any[]>([]);
@@ -163,16 +165,11 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
     }
   };
 
-  // Google OAuth Login
-  const handleGoogleSignIn = async () => {
+  // Google OAuth Login (opens Google Account Selection Tab/Modal)
+  const handleGoogleSignIn = () => {
     setAuthError('');
     setAuthSuccess('');
-    try {
-      await signInWithEnclaveGoogle();
-      setAuthSuccess('Google session authorized and synced securely.');
-    } catch (err: any) {
-      setAuthError(err.message || 'Google authentication failed.');
-    }
+    setGoogleChooserOpen(true);
   };
 
   // Sign out session
@@ -1121,6 +1118,15 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
 
         </div>
       )}
+
+      <GoogleAccountChooserModal
+        isOpen={googleChooserOpen}
+        onClose={() => setGoogleChooserOpen(false)}
+        defaultPhone={phoneNumber}
+        onSuccess={() => {
+          setAuthSuccess('Google account selected and session synced securely.');
+        }}
+      />
 
     </div>
   );

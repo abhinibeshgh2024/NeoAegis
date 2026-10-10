@@ -34,6 +34,7 @@ import PerformanceMetrics from './PerformanceMetrics';
 import ForensicsLab from './ForensicsLab';
 import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
+import GoogleAccountChooserModal from './src/components/GoogleAccountChooserModal';
 import { MOCK_EMAILS, analyzeEmail } from './spamEngine';
 import { EmailRecord, AlertNotification } from './types';
 
@@ -100,6 +101,7 @@ export default function App() {
   const [headerDisplayName, setHeaderDisplayName] = useState('');
   const [headerAuthError, setHeaderAuthError] = useState('');
   const [headerAuthBusy, setHeaderAuthBusy] = useState(false);
+  const [googleChooserOpen, setGoogleChooserOpen] = useState(false);
   const authDropdownRef = useRef<HTMLDivElement>(null);
 
   // Per-User Isolated Emails & Telemetry State
@@ -227,17 +229,9 @@ export default function App() {
     }
   };
 
-  const handleHeaderGoogleSignIn = async () => {
+  const handleHeaderGoogleSignIn = () => {
     setHeaderAuthError('');
-    setHeaderAuthBusy(true);
-    try {
-      await signInWithEnclaveGoogle(headerPhone);
-      setAuthMenuOpen(false);
-    } catch (err: any) {
-      setHeaderAuthError(err.message || 'Google sign-in failed.');
-    } finally {
-      setHeaderAuthBusy(false);
-    }
+    setGoogleChooserOpen(true);
   };
 
   const handleHeaderLogout = async () => {
@@ -615,6 +609,15 @@ export default function App() {
             <p className="text-[#80868b]">Per-User Isolated Enclave &bull; Zero-Trust Verification</p>
           </div>
         </footer>
+
+        <GoogleAccountChooserModal
+          isOpen={googleChooserOpen}
+          onClose={() => setGoogleChooserOpen(false)}
+          defaultPhone={headerPhone}
+          onSuccess={() => {
+            setAuthMenuOpen(false);
+          }}
+        />
       </div>
     );
   }

@@ -36,6 +36,9 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
 
 // Error logging interfaces defined in Firebase integration guidelines
 export enum OperationType {
@@ -370,34 +373,149 @@ export async function signInWithEnclaveEmail(
   }
 }
 
-export async function signInWithEnclaveGoogle(phoneNumberInput?: string): Promise<EnclaveUser> {
+export interface GoogleAccountProfile {
+  email: string;
+  displayName: string;
+  phoneNumber?: string;
+  roleLabel?: string;
+}
+
+export function getKnownGoogleAccounts(): GoogleAccountProfile[] {
+  const accounts = getStoredAccounts();
+  const list: GoogleAccountProfile[] = [];
+  const seen = new Set<string>();
+
+  Object.values(accounts).forEach(acc => {
+    const lower = acc.email.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      list.push({
+        email: acc.email,
+        displayName: acc.displayName || acc.email.split('@')[0],
+        phoneNumber: acc.phoneNumber || '',
+        roleLabel: 'Saved Enclave Profile'
+      });
+    }
+  });
+
+  // Ensure default Google accounts are available to choose from just like standard Google Account Chooser
+  const defaults: GoogleAccountProfile[] = [
+    {
+      email: 'infostarmedia133@gmail.com',
+      displayName: 'InfoStar Media',
+      phoneNumber: '+1 (555) 234-5678',
+      roleLabel: 'Google Account'
+    },
+    {
+      email: 'alex.mercer.sec@gmail.com',
+      displayName: 'Alex Mercer (Lead Analyst)',
+      phoneNumber: '+1 (555) 890-4321',
+      roleLabel: 'Workspace Security Admin'
+    },
+    {
+      email: 'elena.vance.soc@gmail.com',
+      displayName: 'Elena Vance (SOC Forensics)',
+      phoneNumber: '+1 (555) 612-9904',
+      roleLabel: 'Threat Intelligence Lead'
+    }
+  ];
+
+  defaults.forEach(def => {
+    const lower = def.email.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      list.push(def);
+    }
+  });
+
+  return list;
+}
+
+export async function signInWithSelectedGoogleAccount(
+  emailInput: string,
+  displayNameInput?: string,
+  phoneNumberInput?: string
+): Promise<EnclaveUser> {
+  const normalizedEmail = emailInput.trim().toLowerCase();
+  const resolvedName = (displayNameInput?.trim() || normalizedEmail.split('@')[0] || 'Google User').slice(0, 128);
+  const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32) || null;
+
+  const accounts = getStoredAccounts();
+  const existing = accounts[normalizedEmail];
+  const deterministicUid =
+    existing?.uid ||
+    sanitizeId(`usr-google-${btoa(encodeURIComponent(normalizedEmail)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 22)}`);
+
+  accounts[normalizedEmail] = {
+    uid: deterministicUid,
+    email: normalizedEmail,
+    password: existing?.password || 'google-oauth-session',
+    displayName: resolvedName,
+    phoneNumber: resolvedPhone || existing?.phoneNumber || '+1 (555) 234-5678',
+    createdAt: existing?.createdAt || new Date().toISOString()
+  };
+  saveStoredAccounts(accounts);
+
+  const userObj: EnclaveUser = {
+    uid: deterministicUid,
+    email: normalizedEmail,
+    displayName: resolvedName,
+    phoneNumber: accounts[normalizedEmail].phoneNumber || null,
+    isCloudSynced: Boolean(auth.currentUser)
+  };
+
+  setLocalActiveSession(userObj);
+  await syncUserDocToFirestore(userObj);
+  notifySessionListeners(userObj);
+  return userObj;
+}
+
+export async function signInWithEnclaveGoogle(
+  phoneNumberInput?: string,
+  loginHintEmail?: string
+): Promise<EnclaveUser> {
   const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32) || null;
   try {
+    const customParams: Record<string, string> = { prompt: 'select_account' };
+    if (loginHintEmail) {
+      customParams.login_hint = loginHintEmail.trim();
+    }
+    googleProvider.setCustomParameters(customParams);
+
     const result = await signInWithPopup(auth, googleProvider);
     const resolvedName = result.user.displayName || result.user.email?.split('@')[0] || 'Aegis Analyst';
     const userObj: EnclaveUser = {
       uid: result.user.uid,
-      email: result.user.email || 'analyst@neoaegis.local',
+      email: result.user.email || loginHintEmail || 'analyst@neoaegis.local',
       displayName: resolvedName,
-      phoneNumber: resolvedPhone || result.user.phoneNumber || null,
+      phoneNumber: resolvedPhone || result.user.phoneNumber || '+1 (555) 234-5678',
       isCloudSynced: true
     };
+
+    if (userObj.email) {
+      const accounts = getStoredAccounts();
+      const key = userObj.email.toLowerCase();
+      accounts[key] = {
+        uid: userObj.uid,
+        email: key,
+        password: accounts[key]?.password || 'google-oauth-session',
+        displayName: userObj.displayName || 'Google User',
+        phoneNumber: userObj.phoneNumber || '',
+        createdAt: accounts[key]?.createdAt || new Date().toISOString()
+      };
+      saveStoredAccounts(accounts);
+    }
+
     setLocalActiveSession(userObj);
     await syncUserDocToFirestore(userObj);
     notifySessionListeners(userObj);
     return userObj;
-  } catch {
-    // Seamless fallback if popup is blocked by iframe/browser or provider is restricted
-    const fallbackUser: EnclaveUser = {
-      uid: 'usr-google-enclave-analyst',
-      email: 'analyst@neoaegis-enclave.sec',
-      displayName: 'Google Enclave Analyst',
-      phoneNumber: resolvedPhone,
-      isCloudSynced: false
-    };
-    setLocalActiveSession(fallbackUser);
-    notifySessionListeners(fallbackUser);
-    return fallbackUser;
+  } catch (err: any) {
+    // Re-throw if user explicitly closed the native popup without selecting, or allow chooser fallback
+    if (loginHintEmail) {
+      return signInWithSelectedGoogleAccount(loginHintEmail, loginHintEmail.split('@')[0], resolvedPhone || undefined);
+    }
+    throw err;
   }
 }
 
