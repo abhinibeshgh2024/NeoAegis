@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User metadata linked to Google Auth accounts",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique user ID" },
+        "email": { "type": "string", "format": "email", "description": "Authorized email address" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "phoneNumber": { "type": "string", "maxLength": 32, "description": "User contact phone number" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Sign-up server timestamp" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "ScannedEmail": {
+      "title": "Scanned Email Record",
+      "description": "Analyzed emails with dynamic threat scores",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique document or email ID" },
+        "subject": { "type": "string", "maxLength": 200, "description": "Email subject" },
+        "sender": { "type": "string", "maxLength": 100, "description": "Sender email" },
+        "recipient": { "type": "string", "maxLength": 100, "description": "Recipient email" },
+        "body": { "type": "string", "maxLength": 10000, "description": "Email body content" },
+        "rawHeaders": { "type": "string", "maxLength": 10000, "description": "Full unparsed envelope headers" },
+        "date": { "type": "string", "description": "Incoming date" },
+        "spamScore": { "type": "integer", "description": "Calculated spam score out of 100" },
+        "phishingLikelihood": { "type": "integer", "description": "Phishing risk level out of 100" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this record" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server record timestamp" }
+      },
+      "required": ["id", "subject", "sender", "recipient", "body", "rawHeaders", "date", "spamScore", "phishingLikelihood", "ownerId", "createdAt"]
+    },
+    "ExportLog": {
+      "title": "Exported Data Log",
+      "description": "Records of downloadable report generations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Export log ID" },
+        "fileName": { "type": "string", "maxLength": 256, "description": "Exported file name" },
+        "fileType": { "type": "string", "enum": ["JSON", "CSV", "PDF"], "description": "Format of the export" },
+        "recordCount": { "type": "integer", "description": "Number of threat items exported" },
+        "ownerId": { "type": "string", "description": "UID of the user who performed the export" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of export action" }
+      },
+      "required": ["id", "fileName", "fileType", "recordCount", "ownerId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Root collection for user profiles"
+    },
+    "/scanned_emails/{emailId}": {
+      "schema": "ScannedEmail",
+      "description": "Root collection for individually scanned email entities"
+    },
+    "/exports/{exportId}": {
+      "schema": "ExportLog",
+      "description": "Root collection for exported log histories"
+    }
+  }
+}

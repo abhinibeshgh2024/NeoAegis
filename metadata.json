@@ -1,6 +1,6 @@
 {
   "name": "NeoAegis",
-  "description": "NeoAegis - Advanced Mail Analyzer and Assistant",
+  "description": "NeoAegis - Advanced Mail Assessment, Decision and Sandbox Apparatus",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

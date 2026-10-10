@@ -11,17 +11,34 @@ import {
 import { 
   ShieldAlert, ShieldCheck, Activity, Award, CheckCircle, XCircle, 
   AlertTriangle, Key, Terminal, BarChart4, Compass, Info, FileSpreadsheet,
-  Download, FileText
+  Download, FileText, Clock, Database, Mail, PlusCircle
 } from 'lucide-react';
 import { EmailRecord, SpamMetrics } from './types';
+import { logExportToEnclaveProfile } from './src/lib/firebase';
 
 interface DashboardProps {
   records: EmailRecord[];
   selectedEmail: EmailRecord | null;
   onSelectEmail: (email: EmailRecord) => void;
+  currentUserUid?: string;
+  savedDataCount?: number;
+  emailsParsedCount?: number;
+  formattedWorkingDuration?: string;
+  onSeedStarterSample?: () => void;
+  onExportLogged?: () => void;
 }
 
-export default function Dashboard({ records, selectedEmail, onSelectEmail }: DashboardProps) {
+export default function Dashboard({
+  records,
+  selectedEmail,
+  onSelectEmail,
+  currentUserUid,
+  savedDataCount = 0,
+  emailsParsedCount = 0,
+  formattedWorkingDuration = '00h 00m 00s',
+  onSeedStarterSample,
+  onExportLogged
+}: DashboardProps) {
   const [activeMetricTab, setActiveMetricTab] = useState<'all' | 'critical' | 'technical'>('all');
 
   // Overall calculations
@@ -137,7 +154,8 @@ export default function Dashboard({ records, selectedEmail, onSelectEmail }: Das
   });
 
   // Function to export all catalog emails as CSV
-  const handleExportAllCSV = () => {
+  const handleExportAllCSV = async () => {
+    if (records.length === 0) return;
     const headers = ["ID", "Subject", "Sender", "Recipient", "Timestamp", "Spam Score", "Phishing Likelihood", "Is Spam", "DKIM", "SPF"];
     const rows = records.map(r => [
       r.id,
@@ -157,17 +175,23 @@ export default function Dashboard({ records, selectedEmail, onSelectEmail }: Das
       + headers.join(",") + "\n" 
       + rows.map(e => e.join(",")).join("\n");
       
+    const fileName = `neoaegis_threat_report_${new Date().toISOString().split('T')[0]}.csv`;
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `neoaegis_threat_report_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute("download", fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    if (currentUserUid) {
+      await logExportToEnclaveProfile(currentUserUid, fileName, records.length, 'CSV');
+      if (onExportLogged) onExportLogged();
+    }
   };
 
   // Function to export selected email incident dossier
-  const handleExportIncidentDossier = () => {
+  const handleExportIncidentDossier = async () => {
     const target = selectedEmail || records[0];
     if (!target) return;
     
@@ -226,40 +250,60 @@ ${target.body}
 End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
 ========================================================================`;
 
+    const fileName = `neoaegis_incident_${target.id}.md`;
     const blob = new Blob([reportContent], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `neoaegis_incident_${target.id}.md`);
+    link.setAttribute("download", fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    if (currentUserUid) {
+      await logExportToEnclaveProfile(currentUserUid, fileName, 1, 'PDF');
+      if (onExportLogged) onExportLogged();
+    }
   };
 
   return (
-    <div className="space-y-8 animate-fade-in" id="dashboard-tab">
+    <div className="space-y-6 animate-fade-in" id="dashboard-tab">
 
       {/* Exporting & Reporting Action Panel */}
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+      <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-5 flex flex-col md:flex-row items-center justify-between gap-4">
         <div>
-          <h3 className="text-sm font-serif italic text-slate-900">Security Forensic Reporting</h3>
-          <p className="text-xs text-slate-500 mt-1">Export executive audit buffer records or download dynamic diagnostic dossiers.</p>
+          <h3 className="text-base font-medium text-[#202124]">Security Forensic Reporting & Personal Vault</h3>
+          <p className="text-xs text-[#5f6368] mt-0.5">
+            All parsed emails, scores, and exported files are isolated to your personal analyst profile.
+          </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+          {records.length === 0 && onSeedStarterSample && (
+            <button
+              onClick={onSeedStarterSample}
+              className="flex-1 md:flex-none px-4 py-2 bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1967d2] border border-[#aecbfa] text-xs font-medium rounded-full transition duration-150 flex items-center justify-center space-x-1.5 cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Scan Starter Sample Mail</span>
+            </button>
+          )}
+
           <button 
             onClick={handleExportIncidentDossier}
-            className="flex-1 md:flex-none px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100/80 text-indigo-700 border border-indigo-200 text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-2xs"
+            disabled={records.length === 0}
+            className="flex-1 md:flex-none px-4 py-2 bg-[#1a73e8] hover:bg-[#1557b0] disabled:opacity-50 text-white text-xs font-medium rounded-full transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-2xs"
           >
             <FileText className="w-4 h-4" />
-            <span>Export Selected Dossier (.md)</span>
+            <span>Export Dossier (.md)</span>
           </button>
           
           <button 
             onClick={handleExportAllCSV}
-            className="flex-1 md:flex-none px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-2xs"
+            disabled={records.length === 0}
+            className="flex-1 md:flex-none px-4 py-2 bg-white hover:bg-[#f1f3f4] disabled:opacity-50 text-[#3c4043] border border-[#dadce0] text-xs font-medium rounded-full transition duration-150 flex items-center justify-center space-x-2 cursor-pointer"
           >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span>Export Full Audit CSV (.csv)</span>
+            <FileSpreadsheet className="w-4 h-4 text-[#1e8e3e]" />
+            <span>Export Audit CSV (.csv)</span>
           </button>
         </div>
       </div>
@@ -267,63 +311,62 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
       {/* 1. Statistics Cards Overview */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         
-        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden" id="card-total-analyzed">
-          <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 px-3 py-1 text-[10px] font-mono rounded-bl-xl border-l border-b border-slate-200">
-            METRIC 01
-          </div>
-          <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Inbound Audited</p>
+        <div className="bg-white border border-[#dadce0] p-5 rounded-2xl relative overflow-hidden" id="card-total-analyzed">
+          <span className="inline-block px-2 py-0.5 bg-[#e8f0fe] text-[#1967d2] text-[10px] font-medium rounded-full mb-2">
+            Emails Parsed
+          </span>
+          <p className="text-xs text-[#5f6368] font-medium mb-1">Number of Emails Parsed</p>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-serif italic text-slate-900">{totalAnalyzed}</span>
-            <span className="text-xs text-slate-500 font-mono">emails parsed</span>
+            <span className="text-2xl font-semibold text-[#202124]">{Math.max(totalAnalyzed, emailsParsedCount)}</span>
+            <span className="text-xs text-[#5f6368]">parsed by you</span>
           </div>
-          <div className="mt-4 flex items-center space-x-1.5 text-[11px] text-indigo-600 font-mono">
-            <Activity className="h-3.5 w-3.5 animate-pulse text-indigo-500" />
-            <span>Active client-side mail interceptor running</span>
+          <div className="mt-3 flex items-center space-x-1.5 text-[11px] text-[#1a73e8] font-medium">
+            <Database className="h-3.5 w-3.5" />
+            <span>Saved Data: {savedDataCount} records</span>
           </div>
         </div>
 
-        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden" id="card-spam-rate">
-          <div className="absolute top-0 right-0 bg-red-50 text-red-600 px-3 py-1 text-[10px] font-mono rounded-bl-xl border-l border-b border-slate-200">
-            METRIC 02
-          </div>
-          <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Spam & Phishing Flagged</p>
+        <div className="bg-white border border-[#dadce0] p-5 rounded-2xl relative overflow-hidden" id="card-spam-rate">
+          <span className="inline-block px-2 py-0.5 bg-[#fce8e6] text-[#c5221f] text-[10px] font-medium rounded-full mb-2">
+            Threats Quarantined
+          </span>
+          <p className="text-xs text-[#5f6368] font-medium mb-1">Spam & Phishing Flagged</p>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-serif italic text-red-600">{spamCount}</span>
-            <span className="text-xs text-slate-500 font-mono">({totalAnalyzed > 0 ? Math.round((spamCount/totalAnalyzed)*100) : 0}%)</span>
+            <span className="text-2xl font-semibold text-[#d93025]">{spamCount}</span>
+            <span className="text-xs text-[#5f6368]">({totalAnalyzed > 0 ? Math.round((spamCount/totalAnalyzed)*100) : 0}%)</span>
           </div>
-          <div className="mt-4 flex items-center space-x-1.5 text-[11px] text-red-600 font-mono">
-            <ShieldAlert className="h-3.5 w-3.5 text-red-500" />
-            <span>Blocked & quarantined automatically</span>
+          <div className="mt-3 flex items-center space-x-1.5 text-[11px] text-[#d93025] font-medium">
+            <ShieldAlert className="h-3.5 w-3.5" />
+            <span>Isolated to your profile</span>
           </div>
         </div>
 
-        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden" id="card-avg-threat">
-          <div className="absolute top-0 right-0 bg-amber-50 text-amber-700 px-3 py-1 text-[10px] font-mono rounded-bl-xl border-l border-b border-slate-200">
-            METRIC 03
-          </div>
-          <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Average Threat Score</p>
+        <div className="bg-white border border-[#dadce0] p-5 rounded-2xl relative overflow-hidden" id="card-avg-threat">
+          <span className="inline-block px-2 py-0.5 bg-[#fef7e0] text-[#b06000] text-[10px] font-medium rounded-full mb-2">
+            Risk Index
+          </span>
+          <p className="text-xs text-[#5f6368] font-medium mb-1">Average Threat Score</p>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-serif italic text-amber-600 underline decoration-1 underline-offset-4">{avgSpamScore}%</span>
-            <span className="text-xs text-slate-500 font-mono font-serif italic">unstable</span>
+            <span className="text-2xl font-semibold text-[#e37400]">{avgSpamScore}%</span>
+            <span className="text-xs text-[#5f6368]">risk baseline</span>
           </div>
-          <div className="mt-4 flex items-center space-x-1.5 text-[11px] text-amber-600 font-mono">
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-            <span>Phishing likelihood average: {avgPhishingScore}%</span>
+          <div className="mt-3 flex items-center space-x-1.5 text-[11px] text-[#b06000] font-medium">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            <span>Phishing average: {avgPhishingScore}%</span>
           </div>
         </div>
 
-        <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl relative overflow-hidden" id="card-defense-index">
-          <div className="absolute top-0 right-0 bg-emerald-50 text-emerald-700 px-3 py-1 text-[10px] font-mono rounded-bl-xl border-l border-b border-slate-200">
-            METRIC 04
-          </div>
-          <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Infrastructure Defense Rating</p>
+        <div className="bg-white border border-[#dadce0] p-5 rounded-2xl relative overflow-hidden" id="card-defense-index">
+          <span className="inline-block px-2 py-0.5 bg-[#e6f4ea] text-[#137333] text-[10px] font-medium rounded-full mb-2">
+            Session Duration
+          </span>
+          <p className="text-xs text-[#5f6368] font-medium mb-1">Working Hours Duration</p>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-serif italic text-emerald-600">Verified</span>
-            <span className="text-xs text-slate-500 font-mono">({avgDefense}% resilience)</span>
+            <span className="text-xl font-semibold text-[#1e8e3e] font-mono">{formattedWorkingDuration}</span>
           </div>
-          <div className="mt-4 flex items-center space-x-1.5 text-[11px] text-emerald-600 font-mono">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-            <span>Full sandbox quarantine active</span>
+          <div className="mt-3 flex items-center space-x-1.5 text-[11px] text-[#1e8e3e] font-medium">
+            <Clock className="h-3.5 w-3.5" />
+            <span>Defense resilience: {avgDefense || 92}%</span>
           </div>
         </div>
 
@@ -333,49 +376,49 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Left Chart: Inbound Threat Spikes */}
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 lg:col-span-7 flex flex-col justify-between">
+        <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-6 lg:col-span-7 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-sm font-serif italic text-slate-900 flex items-center space-x-2">
-                  <BarChart4 className="w-4 h-4 text-indigo-600" />
+                <h3 className="text-sm font-medium text-[#202124] flex items-center space-x-2">
+                  <BarChart4 className="w-4 h-4 text-[#1a73e8]" />
                   <span>Inbound Mail Metrics Distribution</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-1">Cross-analyzing critical indices across current sandbox elements</p>
+                <p className="text-xs text-[#5f6368] mt-0.5">Cross-analyzing critical indices across current sandbox elements</p>
               </div>
-              <span className="px-2 py-0.5 text-[10px] font-mono text-indigo-600 border border-slate-200 rounded-md bg-indigo-50 uppercase">
+              <span className="px-2.5 py-0.5 text-[11px] font-medium text-[#1967d2] rounded-full bg-[#e8f0fe]">
                 Dynamic Graph
               </span>
             </div>
 
-            <div className="w-full h-72 text-xs font-mono">
+            <div className="w-full h-72 text-xs">
               {totalAnalyzed > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={aggregateScoreData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorSpam" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.4}/>
-                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                        <stop offset="5%" stopColor="#ea4335" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#ea4335" stopOpacity={0}/>
                       </linearGradient>
                       <linearGradient id="colorPhish" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4}/>
-                        <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                        <stop offset="5%" stopColor="#fbbc04" stopOpacity={0.35}/>
+                        <stop offset="95%" stopColor="#fbbc04" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="name" stroke="#64748b" />
-                    <YAxis stroke="#64748b" domain={[0, 100]} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#dadce0" />
+                    <XAxis dataKey="name" stroke="#5f6368" />
+                    <YAxis stroke="#5f6368" domain={[0, 100]} />
                     <Tooltip 
-                      contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#0f172a' }}
-                      itemStyle={{ color: '#475569' }}
+                      contentStyle={{ backgroundColor: '#ffffff', borderColor: '#dadce0', color: '#202124', borderRadius: '12px' }}
+                      itemStyle={{ color: '#3c4043' }}
                     />
                     <Legend />
-                    <Area type="monotone" dataKey="Spam Score" stroke="#ef4444" fillOpacity={1} fill="url(#colorSpam)" />
-                    <Area type="monotone" dataKey="Phishing Likelihood" stroke="#f59e0b" fillOpacity={1} fill="url(#colorPhish)" />
+                    <Area type="monotone" dataKey="Spam Score" stroke="#d93025" strokeWidth={2} fillOpacity={1} fill="url(#colorSpam)" />
+                    <Area type="monotone" dataKey="Phishing Likelihood" stroke="#e37400" strokeWidth={2} fillOpacity={1} fill="url(#colorPhish)" />
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="h-full flex items-center justify-center text-slate-400">
+                <div className="h-full flex items-center justify-center text-[#5f6368]">
                   Inject/Audit emails to stream visual metrics
                 </div>
               )}
@@ -384,36 +427,36 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
         </div>
 
         {/* Right Chart: Current Focus Deep Vector Radar */}
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 lg:col-span-5 flex flex-col justify-between">
+        <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-6 lg:col-span-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-sm font-serif italic text-slate-900 flex items-center space-x-2">
-                  <Compass className="w-4 h-4 text-amber-600" />
+                <h3 className="text-sm font-medium text-[#202124] flex items-center space-x-2">
+                  <Compass className="w-4 h-4 text-[#1a73e8]" />
                   <span>Threat Lure Vector Profiling</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-1">Multi-dimensional vector parsing of the active target email</p>
+                <p className="text-xs text-[#5f6368] mt-0.5">Multi-dimensional vector parsing of the active target email</p>
               </div>
-              <span className="px-2 py-0.5 text-[10px] font-mono text-amber-600 border border-slate-200 rounded-md bg-amber-50 uppercase">
-                Radar
+              <span className="px-2.5 py-0.5 text-[11px] font-medium text-[#1967d2] rounded-full bg-[#e8f0fe]">
+                Vector Radar
               </span>
             </div>
 
-            <div className="w-full h-72 text-xs font-mono flex items-center justify-center">
+            <div className="w-full h-72 text-xs flex items-center justify-center">
               <ResponsiveContainer width="100%" height="100%">
                 <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarMetricsData}>
-                  <PolarGrid stroke="#e2e8f0" />
-                  <PolarAngleAxis dataKey="subject" stroke="#475569" />
-                  <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#cbd5e1" />
-                  <Radar name="Active Target Metrics" dataKey="A" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.2} />
-                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#0f172a' }} />
+                  <PolarGrid stroke="#dadce0" />
+                  <PolarAngleAxis dataKey="subject" stroke="#3c4043" />
+                  <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#bdc1c6" />
+                  <Radar name="Active Target Metrics" dataKey="A" stroke="#1a73e8" fill="#1a73e8" fillOpacity={0.2} />
+                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#dadce0', color: '#202124', borderRadius: '12px' }} />
                 </RadarChart>
               </ResponsiveContainer>
             </div>
           </div>
-          <div className="text-center pt-2 border-t border-slate-200">
-            <span className="text-xs text-slate-500 font-mono">
-              Active Focus: <span className="text-amber-600 font-medium font-sans">{selectedEmail ? selectedEmail.subject.substring(0, 30) + '...' : 'Default Sandbox Profile'}</span>
+          <div className="text-center pt-2 border-t border-[#dadce0]">
+            <span className="text-xs text-[#5f6368]">
+              Active Focus: <span className="text-[#1a73e8] font-medium">{selectedEmail ? selectedEmail.subject.substring(0, 32) + '...' : 'Default Sandbox Profile'}</span>
             </span>
           </div>
         </div>
@@ -421,32 +464,32 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
       </div>
 
       {/* 3. The 30+ Metrics Directory & Analyzer Inventory */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-slate-200">
+      <div className="bg-white border border-[#dadce0] rounded-2xl p-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-5 border-b border-[#dadce0]">
           <div>
-            <h3 className="text-base font-serif italic text-slate-900 flex items-center space-x-2">
-              <Terminal className="text-indigo-600 h-5 w-5" />
+            <h3 className="text-base font-medium text-[#202124] flex items-center space-x-2">
+              <Terminal className="text-[#1a73e8] h-5 w-5" />
               <span>Diagnostic Telemetry Directory (34 Dynamic Metrics Evaluated)</span>
             </h3>
-            <p className="text-xs text-slate-500 mt-1">
-              Select an email in the side elements to check live localized heuristic and algorithmic values computed recursively.
+            <p className="text-xs text-[#5f6368] mt-1">
+              Select an email in the right panel to inspect live localized heuristic and algorithmic values.
             </p>
           </div>
           
-          <div className="flex flex-wrap items-center gap-1 mt-4 md:mt-0 bg-slate-100 p-1 rounded-xl border border-slate-200">
+          <div className="flex flex-wrap items-center gap-1 mt-4 md:mt-0 bg-[#f1f3f4] p-1 rounded-full">
             <button 
               onClick={() => setActiveMetricTab('all')}
-              className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all duration-200 ${activeMetricTab === 'all' ? 'bg-white text-indigo-600 border border-indigo-100 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'}`}>
-              All 34
+              className={`px-3.5 py-1.5 text-xs font-medium rounded-full transition-all duration-150 cursor-pointer ${activeMetricTab === 'all' ? 'bg-white text-[#1a73e8] shadow-2xs' : 'text-[#5f6368] hover:text-[#202124]'}`}>
+              All (34)
             </button>
             <button 
               onClick={() => setActiveMetricTab('critical')}
-              className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all duration-200 ${activeMetricTab === 'critical' ? 'bg-white text-indigo-600 border border-indigo-100 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'}`}>
+              className={`px-3.5 py-1.5 text-xs font-medium rounded-full transition-all duration-150 cursor-pointer ${activeMetricTab === 'critical' ? 'bg-white text-[#1a73e8] shadow-2xs' : 'text-[#5f6368] hover:text-[#202124]'}`}>
               Threat Vectors (14)
             </button>
             <button 
               onClick={() => setActiveMetricTab('technical')}
-              className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all duration-200 ${activeMetricTab === 'technical' ? 'bg-white text-indigo-600 border border-indigo-100 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'}`}>
+              className={`px-3.5 py-1.5 text-xs font-medium rounded-full transition-all duration-150 cursor-pointer ${activeMetricTab === 'technical' ? 'bg-white text-[#1a73e8] shadow-2xs' : 'text-[#5f6368] hover:text-[#202124]'}`}>
               Technical Alignment (20)
             </button>
           </div>
@@ -462,31 +505,31 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
             return (
               <div 
                 key={met.key} 
-                className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 hover:border-indigo-400 transition-all duration-300 flex flex-col justify-between group shadow-3xs"
+                className="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] hover:border-[#1a73e8] transition-all duration-200 flex flex-col justify-between group"
                 id={`metric-item-${met.key}`}
               >
                 <div>
                   <div className="flex items-start justify-between">
-                    <span className="text-xs font-mono text-slate-400 group-hover:text-indigo-600 transition-colors">
+                    <span className="text-[11px] font-mono text-[#5f6368] group-hover:text-[#1a73e8] transition-colors">
                       M-{index+1 < 10 ? '0'+(index+1) : index+1}
                     </span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-mono font-bold ${
-                      isDanger ? 'bg-red-50 text-red-600 border border-red-200' :
-                      isSuccess ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
-                      isWarning ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                      'bg-slate-200 text-slate-700'
+                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
+                      isDanger ? 'bg-[#fce8e6] text-[#c5221f]' :
+                      isSuccess ? 'bg-[#e6f4ea] text-[#137333]' :
+                      isWarning ? 'bg-[#fef7e0] text-[#b06000]' :
+                      'bg-[#e8eaed] text-[#3c4043]'
                     }`}>
                       {met.value}
                     </span>
                   </div>
-                  <h4 className="text-xs font-mono font-medium text-slate-800 mt-2">{met.label}</h4>
-                  <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">{met.desc}</p>
+                  <h4 className="text-xs font-medium text-[#202124] mt-2">{met.label}</h4>
+                  <p className="text-[11px] text-[#5f6368] mt-1 leading-relaxed">{met.desc}</p>
                 </div>
-                <div className="mt-3 pt-2.5 border-t border-slate-200/55 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                  <span>Scope: Local Sandbox</span>
-                  <span className="opacity-0 group-hover:opacity-100 text-indigo-600 transition-opacity flex items-center space-x-0.5">
+                <div className="mt-3 pt-2.5 border-t border-[#dadce0]/60 flex items-center justify-between text-[10px] text-[#5f6368]">
+                  <span>Local Sandbox</span>
+                  <span className="opacity-0 group-hover:opacity-100 text-[#1a73e8] transition-opacity flex items-center space-x-0.5 font-medium">
                     <Info className="w-3 h-3" />
-                    <span>Algorithmic</span>
+                    <span>Heuristic</span>
                   </span>
                 </div>
               </div>

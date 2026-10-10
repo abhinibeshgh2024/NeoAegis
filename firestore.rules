@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE SECURITY PRIMITIVES ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'google.com');
+    }
+
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestampOrIso(val) {
+      return val == request.time || (val is string && val.size() >= 10 && val.size() <= 64);
+    }
+
+    // --- ENTITY SCHEMA VALIDATORS (Mathematical Schema Constraints) ---
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt'])
+        && (data.keys().size() == 4 || (data.keys().size() == 5 && 'phoneNumber' in data && data.phoneNumber is string && data.phoneNumber.size() <= 32))
+        && data.uid is string && data.uid.size() <= 128
+        && data.email is string && data.email.size() <= 128
+        && data.displayName is string && data.displayName.size() <= 128
+        && isValidTimestampOrIso(data.createdAt);
+    }
+
+    function isValidScannedEmail(data) {
+      return data.keys().hasAll(['id', 'subject', 'sender', 'recipient', 'body', 'rawHeaders', 'date', 'spamScore', 'phishingLikelihood', 'ownerId', 'createdAt'])
+        && data.keys().size() == 11
+        && data.id is string && data.id.size() <= 128
+        && data.subject is string && data.subject.size() <= 200
+        && data.sender is string && data.sender.size() <= 100
+        && data.recipient is string && data.recipient.size() <= 100
+        && data.body is string && data.body.size() <= 10000
+        && data.rawHeaders is string && data.rawHeaders.size() <= 10000
+        && data.date is string && data.date.size() <= 100
+        && data.spamScore is number && data.spamScore >= 0 && data.spamScore <= 100
+        && data.phishingLikelihood is number && data.phishingLikelihood >= 0 && data.phishingLikelihood <= 100
+        && data.ownerId is string && data.ownerId.size() <= 128
+        && isValidTimestampOrIso(data.createdAt);
+    }
+
+    function isValidExportLog(data) {
+      return data.keys().hasAll(['id', 'fileName', 'fileType', 'recordCount', 'ownerId', 'createdAt'])
+        && data.keys().size() == 6
+        && data.id is string && data.id.size() <= 128
+        && data.fileName is string && data.fileName.size() <= 256
+        && data.fileType is string && (data.fileType == 'JSON' || data.fileType == 'CSV' || data.fileType == 'PDF')
+        && data.recordCount is number && data.recordCount >= 0
+        && data.ownerId is string && data.ownerId.size() <= 128
+        && isValidTimestampOrIso(data.createdAt);
+    }
+
+    // --- COLLECTION MATCHES ---
+
+    // User Profile Documents
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming())
+        && incoming().uid == existing().uid;
+      allow delete: if false; // User accounts cannot be deleted directly from client SDKs
+    }
+
+    // Scanned Phishing Emails Collection
+    match /scanned_emails/{emailId} {
+      allow get: if isSignedIn() && isOwner(existing().ownerId);
+      allow list: if isSignedIn() && isOwner(resource.data.ownerId);
+      allow create: if isSignedIn() && isOwner(incoming().ownerId) && isValidId(emailId) && isValidScannedEmail(incoming());
+      allow update: if isSignedIn() && isOwner(existing().ownerId) && isOwner(incoming().ownerId) && isValidId(emailId) && isValidScannedEmail(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId;
+      allow delete: if isSignedIn() && isOwner(existing().ownerId);
+    }
+
+    // Download/Export Action Logs
+    match /exports/{exportId} {
+      allow get: if isSignedIn() && isOwner(existing().ownerId);
+      allow list: if isSignedIn() && isOwner(resource.data.ownerId);
+      allow create: if isSignedIn() && isOwner(incoming().ownerId) && isValidId(exportId) && isValidExportLog(incoming());
+      allow update: if false; // Export traces are immutable, write-once audit records
+      allow delete: if isSignedIn() && isOwner(existing().ownerId);
+    }
+
+  }
+}
