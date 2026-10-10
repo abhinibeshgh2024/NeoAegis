@@ -6,6 +6,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   EnclaveUser,
+  COUNTRY_DIAL_CODES,
+  validateEmailRules,
+  validatePasswordRules,
+  validatePhoneRules,
+  validateDobRules,
+  calculateAgeFromDob,
   subscribeToAuthSession,
   signUpWithEnclaveEmail,
   signInWithEnclaveEmail,
@@ -14,16 +20,15 @@ import {
   fetchEnclaveUserData,
   saveEmailToEnclaveProfile,
   deleteEmailFromEnclaveProfile,
-  logExportToEnclaveProfile
+  logExportToEnclaveProfile,
+  formatWorkingDuration
 } from '../lib/firebase';
 import { 
   User, Lock, Mail, LogOut, CheckCircle2, ShieldCheck, Clock, 
   Download, FileSpreadsheet, AlertTriangle, Languages, Sparkles, 
-  Cpu, Network, GitMerge, FileText, BarChart3, Trash2, Database, Phone
+  Cpu, Network, GitMerge, FileText, BarChart3, Trash2, Database, Phone, Calendar
 } from 'lucide-react';
 import { EmailRecord } from '../../types';
-import { formatWorkingDuration } from '../lib/firebase';
-import GoogleAccountChooserModal from './GoogleAccountChooserModal';
 
 interface UserProfileProps {
   selectedEmail: EmailRecord | null;
@@ -59,12 +64,16 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
     }
   }, [initialAuthMode]);
   const [email, setEmail] = useState('');
+  const [countryCode, setCountryCode] = useState('IN');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
-  const [googleChooserOpen, setGoogleChooserOpen] = useState(false);
+
+  const selectedCountry =
+    COUNTRY_DIAL_CODES.find(c => c.code === countryCode) || COUNTRY_DIAL_CODES[0];
 
   // Profile data fetched from Firestore / Enclave Vault
   const [userEmails, setUserEmails] = useState<any[]>([]);
@@ -133,31 +142,48 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
     setAuthError('');
     setAuthSuccess('');
 
-    if (!email || !phoneNumber || !password) {
-      setAuthError('Email, Phone Number, and Password fields are mandatory.');
+    const emailErr = validateEmailRules(email);
+    if (emailErr) {
+      setAuthError(emailErr);
       return;
     }
 
-    if (phoneNumber.replace(/\D/g, '').length < 7) {
-      setAuthError('Please enter a valid Phone Number (at least 7 digits).');
+    const phoneErr = validatePhoneRules(phoneNumber, selectedCountry);
+    if (phoneErr) {
+      setAuthError(phoneErr);
       return;
     }
 
-    if (password.length < 6) {
-      setAuthError('Password must be at least 6 characters for cryptographic safety.');
+    if (isSignUp) {
+      const dobErr = validateDobRules(dateOfBirth);
+      if (dobErr) {
+        setAuthError(dobErr);
+        return;
+      }
+
+      const passErr = validatePasswordRules(password);
+      if (passErr) {
+        setAuthError(passErr);
+        return;
+      }
+    } else if (!password || password.length < 6) {
+      setAuthError('Please enter your password.');
       return;
     }
+
+    const formattedPhoneWithCode = `${selectedCountry.dial} ${phoneNumber.replace(/\D/g, '')}`;
 
     try {
       if (isSignUp) {
-        await signUpWithEnclaveEmail(email, password, displayName, phoneNumber);
+        await signUpWithEnclaveEmail(email, password, displayName, formattedPhoneWithCode, dateOfBirth);
         setAuthSuccess('Registration successful! Welcome to the secure enclave.');
       } else {
-        await signInWithEnclaveEmail(email, password, phoneNumber);
+        await signInWithEnclaveEmail(email, password, formattedPhoneWithCode);
         setAuthSuccess('Sign in successful. Synchronizing secure files...');
       }
       setEmail('');
       setPhoneNumber('');
+      setDateOfBirth('');
       setPassword('');
       setDisplayName('');
     } catch (err: any) {
@@ -165,11 +191,18 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
     }
   };
 
-  // Google OAuth Login (opens Google Account Selection Tab/Modal)
-  const handleGoogleSignIn = () => {
+  // Firebase-based Google OAuth Login
+  const handleGoogleSignIn = async () => {
     setAuthError('');
     setAuthSuccess('');
-    setGoogleChooserOpen(true);
+    try {
+      const digits = phoneNumber.replace(/\D/g, '');
+      const formattedPhone = digits ? `${selectedCountry.dial} ${digits}` : undefined;
+      await signInWithEnclaveGoogle(formattedPhone);
+      setAuthSuccess('Google session authorized and synced securely.');
+    } catch (err: any) {
+      setAuthError(err.message || 'Google authentication failed.');
+    }
   };
 
   // Sign out session
@@ -711,19 +744,64 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
               </div>
 
               <div>
-                <label className="block text-[11px] font-mono text-slate-500 mb-1">ANALYST PHONE NUMBER</label>
-                <input 
-                  type="tel"
-                  required
-                  value={phoneNumber}
-                  onChange={e => setPhoneNumber(e.target.value)}
-                  placeholder="+1 (555) 234-5678"
-                  className="w-full text-xs font-mono bg-slate-50 border border-slate-200 p-2.5 rounded-lg focus:outline-none focus:border-indigo-400"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-mono text-slate-500">ANALYST PHONE NUMBER (WITH COUNTRY CODE)</label>
+                  <span className="text-[10px] font-mono text-indigo-600">
+                    {selectedCountry.minDigits} digits required
+                  </span>
+                </div>
+                <div className="flex items-stretch gap-2">
+                  <select
+                    value={countryCode}
+                    onChange={e => setCountryCode(e.target.value)}
+                    aria-label="Country code selector"
+                    className="text-xs font-mono bg-slate-50 border border-slate-200 px-2.5 py-2.5 rounded-lg focus:outline-none focus:border-indigo-400 cursor-pointer shrink-0"
+                  >
+                    {COUNTRY_DIAL_CODES.map(c => (
+                      <option key={c.code} value={c.code}>
+                        {c.flag} {c.dial} ({c.code})
+                      </option>
+                    ))}
+                  </select>
+                  <input 
+                    type="tel"
+                    required
+                    value={phoneNumber}
+                    onChange={e => setPhoneNumber(e.target.value.replace(/[^\d\s-]/g, ''))}
+                    placeholder={'9'.repeat(selectedCountry.minDigits)}
+                    maxLength={selectedCountry.maxDigits + 3}
+                    className="flex-1 text-xs font-mono bg-slate-50 border border-slate-200 p-2.5 rounded-lg focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
               </div>
 
+              {isSignUp && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-mono text-slate-500">DATE OF BIRTH (MINIMUM AGE 15+)</label>
+                    {dateOfBirth && (
+                      <span className={`text-[10px] font-mono font-bold ${
+                        calculateAgeFromDob(dateOfBirth) >= 15 ? 'text-emerald-600' : 'text-red-600'
+                      }`}>
+                        Age: {Math.max(0, calculateAgeFromDob(dateOfBirth))} yrs
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="date"
+                    required
+                    value={dateOfBirth}
+                    max={new Date().toISOString().split('T')[0]}
+                    onChange={e => setDateOfBirth(e.target.value)}
+                    className="w-full text-xs font-mono bg-slate-50 border border-slate-200 p-2.5 rounded-lg focus:outline-none focus:border-indigo-400"
+                  />
+                </div>
+              )}
+
               <div>
-                <label className="block text-[11px] font-mono text-slate-500 mb-1">SECURE ENCLAVE PASSWORD (6+ CHARACTERS)</label>
+                <label className="block text-[11px] font-mono text-slate-500 mb-1">
+                  {isSignUp ? 'SECURE PASSWORD (8+ CHARS, UPPER, LOWER, DIGIT & SYMBOL)' : 'SECURE ENCLAVE PASSWORD'}
+                </label>
                 <input 
                   type="password"
                   required
@@ -974,6 +1052,12 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
                         <span>{user.phoneNumber}</span>
                       </span>
                     )}
+                    {user.dateOfBirth && (
+                      <span className="text-[10px] font-mono text-slate-500 flex items-center gap-1 mt-0.5">
+                        <Calendar className="w-3 h-3" />
+                        <span>DOB: {user.dateOfBirth} ({calculateAgeFromDob(user.dateOfBirth)} yrs)</span>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-100 text-[9px] font-mono text-indigo-600 rounded-lg font-bold">
@@ -1118,15 +1202,6 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
 
         </div>
       )}
-
-      <GoogleAccountChooserModal
-        isOpen={googleChooserOpen}
-        onClose={() => setGoogleChooserOpen(false)}
-        defaultPhone={phoneNumber}
-        onSuccess={() => {
-          setAuthSuccess('Google account selected and session synced securely.');
-        }}
-      />
 
     </div>
   );

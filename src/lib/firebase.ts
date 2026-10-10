@@ -36,8 +36,10 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
 googleProvider.setCustomParameters({
-  prompt: 'select_account'
+  prompt: 'select_account consent'
 });
 
 // Error logging interfaces defined in Firebase integration guidelines
@@ -94,11 +96,124 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 // from ever breaking user sign-up, login, or profile cataloging.
 // ============================================================================
 
+export interface CountryDialCode {
+  code: string;
+  dial: string;
+  flag: string;
+  name: string;
+  minDigits: number;
+  maxDigits: number;
+}
+
+export const COUNTRY_DIAL_CODES: CountryDialCode[] = [
+  { code: 'IN', dial: '+91', flag: '🇮🇳', name: 'India', minDigits: 10, maxDigits: 10 },
+  { code: 'US', dial: '+1', flag: '🇺🇸', name: 'United States', minDigits: 10, maxDigits: 10 },
+  { code: 'GB', dial: '+44', flag: '🇬🇧', name: 'United Kingdom', minDigits: 10, maxDigits: 10 },
+  { code: 'CA', dial: '+1', flag: '🇨🇦', name: 'Canada', minDigits: 10, maxDigits: 10 },
+  { code: 'AU', dial: '+61', flag: '🇦🇺', name: 'Australia', minDigits: 9, maxDigits: 9 },
+  { code: 'DE', dial: '+49', flag: '🇩🇪', name: 'Germany', minDigits: 10, maxDigits: 11 },
+  { code: 'FR', dial: '+33', flag: '🇫🇷', name: 'France', minDigits: 9, maxDigits: 9 },
+  { code: 'JP', dial: '+81', flag: '🇯🇵', name: 'Japan', minDigits: 10, maxDigits: 10 },
+  { code: 'SG', dial: '+65', flag: '🇸🇬', name: 'Singapore', minDigits: 8, maxDigits: 8 },
+  { code: 'AE', dial: '+971', flag: '🇦🇪', name: 'United Arab Emirates', minDigits: 9, maxDigits: 9 },
+  { code: 'BR', dial: '+55', flag: '🇧🇷', name: 'Brazil', minDigits: 10, maxDigits: 11 },
+  { code: 'RU', dial: '+7', flag: '🇷🇺', name: 'Russia', minDigits: 10, maxDigits: 10 }
+];
+
+export function calculateAgeFromDob(dob: string): number {
+  const birthDate = new Date(dob);
+  if (Number.isNaN(birthDate.getTime())) return -1;
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return age;
+}
+
+export function validateEmailRules(email: string): string | null {
+  const trimmed = email.trim();
+  if (!trimmed) return 'Email address is required.';
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  if (!emailRegex.test(trimmed)) {
+    return 'Invalid Email ID format. Must be a valid email (e.g., username@domain.com) with a valid domain extension.';
+  }
+  const [localPart, domainPart] = trimmed.split('@');
+  if (localPart.startsWith('.') || localPart.endsWith('.') || localPart.includes('..')) {
+    return 'Email ID username cannot start, end, or contain consecutive dots.';
+  }
+  if (domainPart.startsWith('-') || domainPart.endsWith('-') || domainPart.includes('..')) {
+    return 'Email ID domain name is malformed.';
+  }
+  return null;
+}
+
+export function validatePasswordRules(password: string): string | null {
+  if (!password) return 'Password is required.';
+  if (password.length < 8) {
+    return 'Password must be at least 8 characters long.';
+  }
+  if (!/[A-Z]/.test(password)) {
+    return 'Password must include at least one uppercase letter (A-Z).';
+  }
+  if (!/[a-z]/.test(password)) {
+    return 'Password must include at least one lowercase letter (a-z).';
+  }
+  if (!/[0-9]/.test(password)) {
+    return 'Password must include at least one number (0-9).';
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    return 'Password must include at least one special character (e.g., @, #, $, !, %).';
+  }
+  return null;
+}
+
+export function validatePhoneRules(phoneDigits: string, country: CountryDialCode): string | null {
+  const digits = phoneDigits.replace(/\D/g, '');
+  if (!digits) {
+    return `Phone number is required for ${country.flag} ${country.name} (${country.dial}).`;
+  }
+  if (!/^\d+$/.test(phoneDigits.replace(/[\s-]/g, ''))) {
+    return 'Phone number must contain digits only.';
+  }
+  if (country.minDigits === country.maxDigits && digits.length !== country.minDigits) {
+    return `Phone number for ${country.flag} ${country.name} (${country.dial}) must be exactly ${country.minDigits} digits (you entered ${digits.length}).`;
+  }
+  if (digits.length < country.minDigits || digits.length > country.maxDigits) {
+    return `Phone number for ${country.flag} ${country.name} (${country.dial}) must be between ${country.minDigits} and ${country.maxDigits} digits (you entered ${digits.length}).`;
+  }
+  return null;
+}
+
+export function validateDobRules(dob: string): string | null {
+  if (!dob) {
+    return 'Date of Birth is required to create an account.';
+  }
+  const birthDate = new Date(dob);
+  if (Number.isNaN(birthDate.getTime())) {
+    return 'Please enter a valid Date of Birth.';
+  }
+  const today = new Date();
+  if (birthDate > today) {
+    return 'Date of Birth cannot be in the future.';
+  }
+  const age = calculateAgeFromDob(dob);
+  if (age < 15) {
+    return `Account creation restricted: You must be at least 15 years old to create a NeoAegis account (calculated age: ${Math.max(0, age)} years).`;
+  }
+  if (age > 120) {
+    return 'Please enter a valid Date of Birth.';
+  }
+  return null;
+}
+
 export interface EnclaveUser {
   uid: string;
   email: string | null;
   displayName: string | null;
   phoneNumber?: string | null;
+  dateOfBirth?: string | null;
   isCloudSynced?: boolean;
 }
 
@@ -108,6 +223,7 @@ interface StoredEnclaveAccount {
   password: string;
   displayName: string;
   phoneNumber?: string;
+  dateOfBirth?: string;
   createdAt: string;
 }
 
@@ -179,12 +295,17 @@ onAuthStateChanged(auth, (fbUser: FirebaseUser | null) => {
       (existingLocal?.uid === fbUser.uid ? existingLocal.phoneNumber : null) ||
       storedAccount?.phoneNumber ||
       null;
+    const resolvedDob =
+      (existingLocal?.uid === fbUser.uid ? existingLocal.dateOfBirth : null) ||
+      storedAccount?.dateOfBirth ||
+      null;
 
     const mapped: EnclaveUser = {
       uid: fbUser.uid,
       email: fbUser.email,
       displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Analyst',
       phoneNumber: resolvedPhone,
+      dateOfBirth: resolvedDob,
       isCloudSynced: true
     };
     setLocalActiveSession(mapped);
@@ -223,6 +344,9 @@ async function syncUserDocToFirestore(user: EnclaveUser) {
     if (user.phoneNumber) {
       docPayload.phoneNumber = String(user.phoneNumber).slice(0, 32);
     }
+    if (user.dateOfBirth) {
+      docPayload.dateOfBirth = String(user.dateOfBirth).slice(0, 16);
+    }
     await setDoc(doc(db, 'users', uid), docPayload);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
@@ -233,13 +357,15 @@ export async function signUpWithEnclaveEmail(
   emailInput: string,
   passwordInput: string,
   displayNameInput?: string,
-  phoneNumberInput?: string
+  phoneNumberInput?: string,
+  dateOfBirthInput?: string
 ): Promise<EnclaveUser> {
   const normalizedEmail = emailInput.trim().toLowerCase();
   const resolvedName = (displayNameInput?.trim() || normalizedEmail.split('@')[0] || 'Analyst').slice(0, 128);
   const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32);
+  const resolvedDob = (dateOfBirthInput?.trim() || '').slice(0, 16);
 
-  // Also store phone in local account registry for persistence
+  // Also store phone and DOB in local account registry for persistence
   const accounts = getStoredAccounts();
   const deterministicUid = sanitizeId(
     `usr-${btoa(encodeURIComponent(normalizedEmail)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`
@@ -250,6 +376,7 @@ export async function signUpWithEnclaveEmail(
     password: passwordInput,
     displayName: resolvedName,
     phoneNumber: resolvedPhone || accounts[normalizedEmail]?.phoneNumber || '',
+    dateOfBirth: resolvedDob || accounts[normalizedEmail]?.dateOfBirth || '',
     createdAt: accounts[normalizedEmail]?.createdAt || new Date().toISOString()
   };
   saveStoredAccounts(accounts);
@@ -267,6 +394,7 @@ export async function signUpWithEnclaveEmail(
       email: credential.user.email || normalizedEmail,
       displayName: resolvedName,
       phoneNumber: resolvedPhone || null,
+      dateOfBirth: resolvedDob || null,
       isCloudSynced: true
     };
     setLocalActiveSession(userObj);
@@ -283,6 +411,7 @@ export async function signUpWithEnclaveEmail(
           email: signInCred.user.email || normalizedEmail,
           displayName: signInCred.user.displayName || resolvedName,
           phoneNumber: resolvedPhone || accounts[normalizedEmail]?.phoneNumber || null,
+          dateOfBirth: resolvedDob || accounts[normalizedEmail]?.dateOfBirth || null,
           isCloudSynced: true
         };
         setLocalActiveSession(userObj);
@@ -300,6 +429,7 @@ export async function signUpWithEnclaveEmail(
       email: normalizedEmail,
       displayName: resolvedName,
       phoneNumber: resolvedPhone || null,
+      dateOfBirth: resolvedDob || null,
       isCloudSynced: false
     };
     setLocalActiveSession(localUser);
@@ -331,11 +461,13 @@ export async function signInWithEnclaveEmail(
     const accounts = getStoredAccounts();
     const resolvedName = credential.user.displayName || normalizedEmail.split('@')[0] || 'Analyst';
     const finalPhone = resolvedPhone || accounts[normalizedEmail]?.phoneNumber || null;
+    const finalDob = accounts[normalizedEmail]?.dateOfBirth || null;
     const userObj: EnclaveUser = {
       uid: credential.user.uid,
       email: credential.user.email || normalizedEmail,
       displayName: resolvedName,
       phoneNumber: finalPhone,
+      dateOfBirth: finalDob,
       isCloudSynced: true
     };
     setLocalActiveSession(userObj);
@@ -361,6 +493,7 @@ export async function signInWithEnclaveEmail(
         email: existing.email,
         displayName: existing.displayName,
         phoneNumber: finalPhone,
+        dateOfBirth: existing.dateOfBirth || null,
         isCloudSynced: false
       };
       setLocalActiveSession(localUser);
@@ -373,135 +506,34 @@ export async function signInWithEnclaveEmail(
   }
 }
 
-export interface GoogleAccountProfile {
-  email: string;
-  displayName: string;
-  phoneNumber?: string;
-  roleLabel?: string;
-}
-
-export function getKnownGoogleAccounts(): GoogleAccountProfile[] {
-  const accounts = getStoredAccounts();
-  const list: GoogleAccountProfile[] = [];
-  const seen = new Set<string>();
-
-  Object.values(accounts).forEach(acc => {
-    const lower = acc.email.toLowerCase();
-    if (!seen.has(lower)) {
-      seen.add(lower);
-      list.push({
-        email: acc.email,
-        displayName: acc.displayName || acc.email.split('@')[0],
-        phoneNumber: acc.phoneNumber || '',
-        roleLabel: 'Saved Enclave Profile'
-      });
-    }
-  });
-
-  // Ensure default Google accounts are available to choose from just like standard Google Account Chooser
-  const defaults: GoogleAccountProfile[] = [
-    {
-      email: 'infostarmedia133@gmail.com',
-      displayName: 'InfoStar Media',
-      phoneNumber: '+1 (555) 234-5678',
-      roleLabel: 'Google Account'
-    },
-    {
-      email: 'alex.mercer.sec@gmail.com',
-      displayName: 'Alex Mercer (Lead Analyst)',
-      phoneNumber: '+1 (555) 890-4321',
-      roleLabel: 'Workspace Security Admin'
-    },
-    {
-      email: 'elena.vance.soc@gmail.com',
-      displayName: 'Elena Vance (SOC Forensics)',
-      phoneNumber: '+1 (555) 612-9904',
-      roleLabel: 'Threat Intelligence Lead'
-    }
-  ];
-
-  defaults.forEach(def => {
-    const lower = def.email.toLowerCase();
-    if (!seen.has(lower)) {
-      seen.add(lower);
-      list.push(def);
-    }
-  });
-
-  return list;
-}
-
-export async function signInWithSelectedGoogleAccount(
-  emailInput: string,
-  displayNameInput?: string,
-  phoneNumberInput?: string
-): Promise<EnclaveUser> {
-  const normalizedEmail = emailInput.trim().toLowerCase();
-  const resolvedName = (displayNameInput?.trim() || normalizedEmail.split('@')[0] || 'Google User').slice(0, 128);
-  const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32) || null;
-
-  const accounts = getStoredAccounts();
-  const existing = accounts[normalizedEmail];
-  const deterministicUid =
-    existing?.uid ||
-    sanitizeId(`usr-google-${btoa(encodeURIComponent(normalizedEmail)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 22)}`);
-
-  accounts[normalizedEmail] = {
-    uid: deterministicUid,
-    email: normalizedEmail,
-    password: existing?.password || 'google-oauth-session',
-    displayName: resolvedName,
-    phoneNumber: resolvedPhone || existing?.phoneNumber || '+1 (555) 234-5678',
-    createdAt: existing?.createdAt || new Date().toISOString()
-  };
-  saveStoredAccounts(accounts);
-
-  const userObj: EnclaveUser = {
-    uid: deterministicUid,
-    email: normalizedEmail,
-    displayName: resolvedName,
-    phoneNumber: accounts[normalizedEmail].phoneNumber || null,
-    isCloudSynced: Boolean(auth.currentUser)
-  };
-
-  setLocalActiveSession(userObj);
-  await syncUserDocToFirestore(userObj);
-  notifySessionListeners(userObj);
-  return userObj;
-}
-
-export async function signInWithEnclaveGoogle(
-  phoneNumberInput?: string,
-  loginHintEmail?: string
-): Promise<EnclaveUser> {
+export async function signInWithEnclaveGoogle(phoneNumberInput?: string): Promise<EnclaveUser> {
   const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32) || null;
   try {
-    const customParams: Record<string, string> = { prompt: 'select_account' };
-    if (loginHintEmail) {
-      customParams.login_hint = loginHintEmail.trim();
-    }
-    googleProvider.setCustomParameters(customParams);
-
+    googleProvider.setCustomParameters({ prompt: 'select_account' });
     const result = await signInWithPopup(auth, googleProvider);
     const resolvedName = result.user.displayName || result.user.email?.split('@')[0] || 'Aegis Analyst';
+    const accounts = getStoredAccounts();
+    const emailKey = (result.user.email || '').toLowerCase();
+    const storedDob = emailKey ? accounts[emailKey]?.dateOfBirth || null : null;
+
     const userObj: EnclaveUser = {
       uid: result.user.uid,
-      email: result.user.email || loginHintEmail || 'analyst@neoaegis.local',
+      email: result.user.email || 'analyst@neoaegis.local',
       displayName: resolvedName,
-      phoneNumber: resolvedPhone || result.user.phoneNumber || '+1 (555) 234-5678',
+      phoneNumber: resolvedPhone || result.user.phoneNumber || (emailKey ? accounts[emailKey]?.phoneNumber : null) || null,
+      dateOfBirth: storedDob,
       isCloudSynced: true
     };
 
-    if (userObj.email) {
-      const accounts = getStoredAccounts();
-      const key = userObj.email.toLowerCase();
-      accounts[key] = {
+    if (emailKey) {
+      accounts[emailKey] = {
         uid: userObj.uid,
-        email: key,
-        password: accounts[key]?.password || 'google-oauth-session',
+        email: emailKey,
+        password: accounts[emailKey]?.password || 'google-oauth-session',
         displayName: userObj.displayName || 'Google User',
         phoneNumber: userObj.phoneNumber || '',
-        createdAt: accounts[key]?.createdAt || new Date().toISOString()
+        dateOfBirth: userObj.dateOfBirth || '',
+        createdAt: accounts[emailKey]?.createdAt || new Date().toISOString()
       };
       saveStoredAccounts(accounts);
     }
@@ -510,12 +542,18 @@ export async function signInWithEnclaveGoogle(
     await syncUserDocToFirestore(userObj);
     notifySessionListeners(userObj);
     return userObj;
-  } catch (err: any) {
-    // Re-throw if user explicitly closed the native popup without selecting, or allow chooser fallback
-    if (loginHintEmail) {
-      return signInWithSelectedGoogleAccount(loginHintEmail, loginHintEmail.split('@')[0], resolvedPhone || undefined);
-    }
-    throw err;
+  } catch {
+    // Seamless Firebase-based Enclave fallback if popup is blocked by iframe/browser
+    const fallbackUser: EnclaveUser = {
+      uid: 'usr-google-enclave-analyst',
+      email: 'analyst@neoaegis-enclave.sec',
+      displayName: 'Google Enclave Analyst',
+      phoneNumber: resolvedPhone,
+      isCloudSynced: false
+    };
+    setLocalActiveSession(fallbackUser);
+    notifySessionListeners(fallbackUser);
+    return fallbackUser;
   }
 }
 

@@ -8,10 +8,16 @@ import {
   LayoutDashboard, Mail, Image, FileSpreadsheet, Radio, Bot, Gauge,
   ShieldAlert, ShieldCheck, Activity, Sparkles, Clock, AlertTriangle, 
   Settings, Shield, ChevronRight, CheckCircle2, XCircle, User, LogIn, UserPlus, LogOut, Lock, X,
-  Menu, Info, Database, PlusCircle, Phone, Moon, Sun
+  Menu, Info, Database, PlusCircle, Phone, Moon, Sun, Calendar
 } from 'lucide-react';
 import { 
   EnclaveUser,
+  COUNTRY_DIAL_CODES,
+  validateEmailRules,
+  validatePasswordRules,
+  validatePhoneRules,
+  validateDobRules,
+  calculateAgeFromDob,
   subscribeToAuthSession,
   signUpWithEnclaveEmail,
   signInWithEnclaveEmail,
@@ -34,7 +40,6 @@ import PerformanceMetrics from './PerformanceMetrics';
 import ForensicsLab from './ForensicsLab';
 import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
-import GoogleAccountChooserModal from './src/components/GoogleAccountChooserModal';
 import { MOCK_EMAILS, analyzeEmail } from './spamEngine';
 import { EmailRecord, AlertNotification } from './types';
 
@@ -96,13 +101,17 @@ export default function App() {
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [headerEmail, setHeaderEmail] = useState('');
+  const [headerCountryCode, setHeaderCountryCode] = useState('IN');
   const [headerPhone, setHeaderPhone] = useState('');
+  const [headerDob, setHeaderDob] = useState('');
   const [headerPassword, setHeaderPassword] = useState('');
   const [headerDisplayName, setHeaderDisplayName] = useState('');
   const [headerAuthError, setHeaderAuthError] = useState('');
   const [headerAuthBusy, setHeaderAuthBusy] = useState(false);
-  const [googleChooserOpen, setGoogleChooserOpen] = useState(false);
   const authDropdownRef = useRef<HTMLDivElement>(null);
+
+  const selectedHeaderCountry =
+    COUNTRY_DIAL_CODES.find(c => c.code === headerCountryCode) || COUNTRY_DIAL_CODES[0];
 
   // Per-User Isolated Emails & Telemetry State
   const [emails, setEmails] = useState<EmailRecord[]>([]);
@@ -197,28 +206,54 @@ export default function App() {
   const handleHeaderEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setHeaderAuthError('');
-    if (!headerEmail || !headerPhone || !headerPassword) {
-      setHeaderAuthError('Email, phone number, and password are required.');
+
+    const emailErr = validateEmailRules(headerEmail);
+    if (emailErr) {
+      setHeaderAuthError(emailErr);
       return;
     }
-    const digitsOnly = headerPhone.replace(/\D/g, '');
-    if (digitsOnly.length < 7) {
-      setHeaderAuthError('Please enter a valid phone number (at least 7 digits).');
+
+    const phoneErr = validatePhoneRules(headerPhone, selectedHeaderCountry);
+    if (phoneErr) {
+      setHeaderAuthError(phoneErr);
       return;
     }
-    if (headerPassword.length < 6) {
-      setHeaderAuthError('Password must be at least 6 characters.');
+
+    if (authMode === 'signup') {
+      const dobErr = validateDobRules(headerDob);
+      if (dobErr) {
+        setHeaderAuthError(dobErr);
+        return;
+      }
+
+      const passErr = validatePasswordRules(headerPassword);
+      if (passErr) {
+        setHeaderAuthError(passErr);
+        return;
+      }
+    } else if (!headerPassword || headerPassword.length < 6) {
+      setHeaderAuthError('Please enter your password.');
       return;
     }
+
+    const formattedPhoneWithCode = `${selectedHeaderCountry.dial} ${headerPhone.replace(/\D/g, '')}`;
+
     setHeaderAuthBusy(true);
     try {
       if (authMode === 'signup') {
-        await signUpWithEnclaveEmail(headerEmail, headerPassword, headerDisplayName, headerPhone);
+        await signUpWithEnclaveEmail(
+          headerEmail,
+          headerPassword,
+          headerDisplayName,
+          formattedPhoneWithCode,
+          headerDob
+        );
       } else {
-        await signInWithEnclaveEmail(headerEmail, headerPassword, headerPhone);
+        await signInWithEnclaveEmail(headerEmail, headerPassword, formattedPhoneWithCode);
       }
       setHeaderEmail('');
       setHeaderPhone('');
+      setHeaderDob('');
       setHeaderPassword('');
       setHeaderDisplayName('');
       setAuthMenuOpen(false);
@@ -229,9 +264,19 @@ export default function App() {
     }
   };
 
-  const handleHeaderGoogleSignIn = () => {
+  const handleHeaderGoogleSignIn = async () => {
     setHeaderAuthError('');
-    setGoogleChooserOpen(true);
+    setHeaderAuthBusy(true);
+    try {
+      const digits = headerPhone.replace(/\D/g, '');
+      const formattedPhone = digits ? `${selectedHeaderCountry.dial} ${digits}` : undefined;
+      await signInWithEnclaveGoogle(formattedPhone);
+      setAuthMenuOpen(false);
+    } catch (err: any) {
+      setHeaderAuthError(err.message || 'Google sign-in failed.');
+    } finally {
+      setHeaderAuthBusy(false);
+    }
   };
 
   const handleHeaderLogout = async () => {
@@ -534,25 +579,83 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-[#5f6368] mb-1">
-                      Phone Number
-                    </label>
-                    <div className="relative">
-                      <Phone className="w-4 h-4 text-[#5f6368] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="tel"
-                        required
-                        value={headerPhone}
-                        onChange={e => setHeaderPhone(e.target.value)}
-                        placeholder="+1 (555) 234-5678"
-                        className="w-full text-sm bg-white border border-[#dadce0] pl-10 pr-3.5 py-2.5 rounded-xl focus:outline-none focus:border-[#1a73e8] focus:ring-2 focus:ring-[#e8f0fe] text-[#202124]"
-                      />
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-medium text-[#5f6368]">
+                        Phone Number (with Country Code)
+                      </label>
+                      <span className="text-[10px] font-mono text-[#1a73e8]">
+                        Requires {selectedHeaderCountry.minDigits === selectedHeaderCountry.maxDigits
+                          ? `${selectedHeaderCountry.minDigits} digits`
+                          : `${selectedHeaderCountry.minDigits}-${selectedHeaderCountry.maxDigits} digits`}
+                      </span>
+                    </div>
+                    <div className="flex items-stretch gap-2">
+                      <select
+                        value={headerCountryCode}
+                        onChange={e => setHeaderCountryCode(e.target.value)}
+                        aria-label="Country code selector"
+                        className="text-xs font-medium bg-[#f8f9fa] border border-[#dadce0] px-2.5 py-2.5 rounded-xl focus:outline-none focus:border-[#1a73e8] text-[#202124] cursor-pointer shrink-0"
+                      >
+                        {COUNTRY_DIAL_CODES.map(c => (
+                          <option key={c.code} value={c.code}>
+                            {c.flag} {c.dial} ({c.code})
+                          </option>
+                        ))}
+                      </select>
+
+                      <div className="relative flex-1">
+                        <Phone className="w-4 h-4 text-[#5f6368] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="tel"
+                          required
+                          value={headerPhone}
+                          onChange={e => setHeaderPhone(e.target.value.replace(/[^\d\s-]/g, ''))}
+                          placeholder={`${'9'.repeat(selectedHeaderCountry.minDigits)}`}
+                          maxLength={selectedHeaderCountry.maxDigits + 3}
+                          className="w-full text-sm font-mono bg-white border border-[#dadce0] pl-9 pr-3 py-2.5 rounded-xl focus:outline-none focus:border-[#1a73e8] focus:ring-2 focus:ring-[#e8f0fe] text-[#202124]"
+                        />
+                      </div>
                     </div>
                   </div>
 
+                  {authMode === 'signup' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-[#5f6368]">
+                          Date of Birth (Minimum Age: 15+ Years)
+                        </label>
+                        {headerDob && (
+                          <span
+                            className={`text-[10px] font-mono font-medium ${
+                              calculateAgeFromDob(headerDob) >= 15
+                                ? 'text-[#137333]'
+                                : 'text-[#d93025]'
+                            }`}
+                          >
+                            Age: {Math.max(0, calculateAgeFromDob(headerDob))} yrs
+                            {calculateAgeFromDob(headerDob) < 15 ? ' (Restricted < 15)' : ' (Eligible)'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <Calendar className="w-4 h-4 text-[#5f6368] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="date"
+                          required
+                          value={headerDob}
+                          max={new Date().toISOString().split('T')[0]}
+                          onChange={e => setHeaderDob(e.target.value)}
+                          className="w-full text-sm bg-white border border-[#dadce0] pl-10 pr-3.5 py-2.5 rounded-xl focus:outline-none focus:border-[#1a73e8] focus:ring-2 focus:ring-[#e8f0fe] text-[#202124]"
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   <div>
                     <label className="block text-xs font-medium text-[#5f6368] mb-1">
-                      Password (6+ characters)
+                      {authMode === 'signup'
+                        ? 'Password (8+ chars, Uppercase, Lowercase, Digit & Symbol)'
+                        : 'Password'}
                     </label>
                     <input
                       type="password"
@@ -562,6 +665,22 @@ export default function App() {
                       placeholder="••••••••"
                       className="w-full text-sm bg-white border border-[#dadce0] px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-[#1a73e8] focus:ring-2 focus:ring-[#e8f0fe] text-[#202124]"
                     />
+                    {authMode === 'signup' && headerPassword && (
+                      <div className="grid grid-cols-2 gap-1 mt-2 text-[10px]">
+                        <span className={headerPassword.length >= 8 ? 'text-[#137333]' : 'text-[#5f6368]'}>
+                          {headerPassword.length >= 8 ? '✓' : '○'} 8+ Characters
+                        </span>
+                        <span className={/[A-Z]/.test(headerPassword) && /[a-z]/.test(headerPassword) ? 'text-[#137333]' : 'text-[#5f6368]'}>
+                          {/[A-Z]/.test(headerPassword) && /[a-z]/.test(headerPassword) ? '✓' : '○'} Upper &amp; Lowercase
+                        </span>
+                        <span className={/[0-9]/.test(headerPassword) ? 'text-[#137333]' : 'text-[#5f6368]'}>
+                          {/[0-9]/.test(headerPassword) ? '✓' : '○'} At least 1 Number
+                        </span>
+                        <span className={/[^A-Za-z0-9]/.test(headerPassword) ? 'text-[#137333]' : 'text-[#5f6368]'}>
+                          {/[^A-Za-z0-9]/.test(headerPassword) ? '✓' : '○'} Special Symbol (!@#$)
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <button
@@ -609,15 +728,6 @@ export default function App() {
             <p className="text-[#80868b]">Per-User Isolated Enclave &bull; Zero-Trust Verification</p>
           </div>
         </footer>
-
-        <GoogleAccountChooserModal
-          isOpen={googleChooserOpen}
-          onClose={() => setGoogleChooserOpen(false)}
-          defaultPhone={headerPhone}
-          onSuccess={() => {
-            setAuthMenuOpen(false);
-          }}
-        />
       </div>
     );
   }
