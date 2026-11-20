@@ -13,11 +13,12 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, 
   Tooltip, BarChart, Bar, Cell, Legend, PieChart, Pie
 } from 'recharts';
-import { EmailRecord } from './types';
+import { EmailRecord, TrainedModelArtifact } from './types';
 import InfoButton from './src/components/InfoButton';
 
 interface PerformanceMetricsProps {
   records: EmailRecord[];
+  activeModel?: TrainedModelArtifact | null;
 }
 
 interface BenchmarkResult {
@@ -66,18 +67,17 @@ const ROC_CURVE_DATA = [
   { fpr: 1.000, tpr: 1.000 }
 ];
 
-export default function PerformanceMetrics({ records }: PerformanceMetricsProps) {
+export default function PerformanceMetrics({ records, activeModel }: PerformanceMetricsProps) {
   const [benchmark, setBenchmark] = useState<BenchmarkResult>(INITIAL_BENCHMARK);
   const [isRunningBenchmark, setIsRunningBenchmark] = useState(false);
   const [benchmarkProgress, setBenchmarkProgress] = useState(0);
 
-  // Compute live calculations incorporating user's active records
+  // Compute live calculations incorporating active trained local model + user's active records
   const liveMetrics = useMemo(() => {
-    // Ground truth heuristic for active records: if spamScore > 50 considered predicted spam
-    let tp = benchmark.tp;
-    let fp = benchmark.fp;
-    let tn = benchmark.tn;
-    let fn = benchmark.fn;
+    let tp = activeModel ? activeModel.evaluation.tp : benchmark.tp;
+    let fp = activeModel ? activeModel.evaluation.fp : benchmark.fp;
+    let tn = activeModel ? activeModel.evaluation.tn : benchmark.tn;
+    let fn = activeModel ? activeModel.evaluation.fn : benchmark.fn;
 
     records.forEach(rec => {
       const predictedSpam = rec.metrics.spamScore >= 50;
@@ -112,7 +112,12 @@ export default function PerformanceMetrics({ records }: PerformanceMetricsProps)
       falsePositiveRate,
       falseNegativeRate
     };
-  }, [records, benchmark]);
+  }, [records, benchmark, activeModel]);
+
+  const activeRocData = activeModel && activeModel.evaluation.rocCurve.length > 0
+    ? activeModel.evaluation.rocCurve
+    : ROC_CURVE_DATA;
+  const activeRocAuc = activeModel ? activeModel.evaluation.rocAUC : benchmark.rocAUC;
 
   // Handle benchmark execution simulator
   const handleRunBenchmark = () => {
@@ -211,26 +216,63 @@ NeoAegis System Verification Audit - All Rights Reserved
     document.body.removeChild(link);
   };
 
-  const moduleBarData = [
-    { name: 'Header Auth', f1: Math.round(benchmark.moduleScores.headerDomainAuth.f1 * 100), precision: Math.round(benchmark.moduleScores.headerDomainAuth.precision * 100), recall: Math.round(benchmark.moduleScores.headerDomainAuth.recall * 100) },
-    { name: 'RAG Copilot', f1: Math.round(benchmark.moduleScores.ragVerification.f1 * 100), precision: Math.round(benchmark.moduleScores.ragVerification.precision * 100), recall: Math.round(benchmark.moduleScores.ragVerification.recall * 100) },
-    { name: 'Rule Engine', f1: Math.round(benchmark.moduleScores.ruleEngine.f1 * 100), precision: Math.round(benchmark.moduleScores.ruleEngine.precision * 100), recall: Math.round(benchmark.moduleScores.ruleEngine.recall * 100) },
-    { name: 'OCR Lure', f1: Math.round(benchmark.moduleScores.imageOcr.f1 * 100), precision: Math.round(benchmark.moduleScores.imageOcr.precision * 100), recall: Math.round(benchmark.moduleScores.imageOcr.recall * 100) },
-  ];
+  const moduleBarData = activeModel
+    ? [
+        {
+          name: 'Legitimate Class',
+          f1: Math.round(activeModel.evaluation.perClass.legitimate.f1 * 100),
+          precision: Math.round(activeModel.evaluation.perClass.legitimate.precision * 100),
+          recall: Math.round(activeModel.evaluation.perClass.legitimate.recall * 100)
+        },
+        {
+          name: 'Spam Class',
+          f1: Math.round(activeModel.evaluation.perClass.spam.f1 * 100),
+          precision: Math.round(activeModel.evaluation.perClass.spam.precision * 100),
+          recall: Math.round(activeModel.evaluation.perClass.spam.recall * 100)
+        },
+        {
+          name: 'Phishing Class',
+          f1: Math.round(activeModel.evaluation.perClass.phishing.f1 * 100),
+          precision: Math.round(activeModel.evaluation.perClass.phishing.precision * 100),
+          recall: Math.round(activeModel.evaluation.perClass.phishing.recall * 100)
+        },
+        {
+          name: 'Overall Macro',
+          f1: Math.round(activeModel.evaluation.f1Score * 100),
+          precision: Math.round(activeModel.evaluation.precision * 100),
+          recall: Math.round(activeModel.evaluation.recall * 100)
+        }
+      ]
+    : [
+        { name: 'Header Auth', f1: Math.round(benchmark.moduleScores.headerDomainAuth.f1 * 100), precision: Math.round(benchmark.moduleScores.headerDomainAuth.precision * 100), recall: Math.round(benchmark.moduleScores.headerDomainAuth.recall * 100) },
+        { name: 'RAG Copilot', f1: Math.round(benchmark.moduleScores.ragVerification.f1 * 100), precision: Math.round(benchmark.moduleScores.ragVerification.precision * 100), recall: Math.round(benchmark.moduleScores.ragVerification.recall * 100) },
+        { name: 'Rule Engine', f1: Math.round(benchmark.moduleScores.ruleEngine.f1 * 100), precision: Math.round(benchmark.moduleScores.ruleEngine.precision * 100), recall: Math.round(benchmark.moduleScores.ruleEngine.recall * 100) },
+        { name: 'OCR Lure', f1: Math.round(benchmark.moduleScores.imageOcr.f1 * 100), precision: Math.round(benchmark.moduleScores.imageOcr.precision * 100), recall: Math.round(benchmark.moduleScores.imageOcr.recall * 100) },
+      ];
 
   return (
     <div className="space-y-8 animate-fade-in" id="performance-tab">
       
       {/* Header Banner & Action Control */}
       <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 shadow-3xs">
-        <div className="flex items-center space-x-2.5">
-          <Target className="w-5 h-5 text-indigo-600" />
-          <h2 className="text-base font-medium text-slate-900">System Performance &amp; Precision Matrix</h2>
-          <InfoButton
-            title="System Performance & Precision Matrix"
-            description={`Real-time accuracy, F1 score, confusion matrix, ROC AUC curve, and sub-engine benchmarks computed across ${liveMetrics.total} evaluated items.`}
-            align="left"
-          />
+        <div className="space-y-1">
+          <div className="flex items-center space-x-2.5">
+            <Target className="w-5 h-5 text-indigo-600" />
+            <h2 className="text-base font-medium text-slate-900">System Performance &amp; Precision Matrix</h2>
+            <InfoButton
+              title="System Performance & Precision Matrix"
+              description={`Real-time accuracy, F1 score, confusion matrix, ROC AUC curve, and class benchmarks computed across ${liveMetrics.total} evaluated items.`}
+              align="left"
+            />
+          </div>
+          <span className="text-xs text-slate-500 block">
+            Source:{' '}
+            <strong className={activeModel ? 'text-emerald-700' : 'text-indigo-700'}>
+              {activeModel
+                ? `Trained Local Model (${activeModel.evaluation.testCount} held-out test samples + ${records.length} vault records)`
+                : `Baseline Heuristics (${benchmark.totalTested} baseline + ${records.length} vault records)`}
+            </strong>
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
@@ -378,7 +420,7 @@ NeoAegis System Verification Audit - All Rights Reserved
                   <Check className="w-3.5 h-3.5 text-emerald-600 font-bold" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-emerald-700 font-bold">{liveMetrics.tp}</span>
+                  <span className="text-2xl font-mono tabular-nums text-emerald-700 font-bold">{liveMetrics.tp}</span>
                   <p className="text-[10px] text-slate-500 font-mono mt-0.5">Phishing correctly blocked</p>
                 </div>
               </div>
@@ -390,7 +432,7 @@ NeoAegis System Verification Audit - All Rights Reserved
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-amber-700 font-bold">{liveMetrics.fp}</span>
+                  <span className="text-2xl font-mono tabular-nums text-amber-700 font-bold">{liveMetrics.fp}</span>
                   <p className="text-[10px] text-slate-500 font-mono mt-0.5">Legit flagged as spam</p>
                 </div>
               </div>
@@ -402,7 +444,7 @@ NeoAegis System Verification Audit - All Rights Reserved
                   <XCircle className="w-3.5 h-3.5 text-red-600" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-red-700 font-bold">{liveMetrics.fn}</span>
+                  <span className="text-2xl font-mono tabular-nums text-red-700 font-bold">{liveMetrics.fn}</span>
                   <p className="text-[10px] text-slate-500 font-mono mt-0.5">Phishing missed</p>
                 </div>
               </div>
@@ -414,7 +456,7 @@ NeoAegis System Verification Audit - All Rights Reserved
                   <CheckCircle2 className="w-3.5 h-3.5 text-slate-500" />
                 </div>
                 <div className="mt-3">
-                  <span className="text-2xl font-serif italic text-slate-800 font-bold">{liveMetrics.tn}</span>
+                  <span className="text-2xl font-mono tabular-nums text-slate-800 font-bold">{liveMetrics.tn}</span>
                   <p className="text-[10px] text-slate-500 font-mono mt-0.5">Legit correctly allowed</p>
                 </div>
               </div>
@@ -437,18 +479,18 @@ NeoAegis System Verification Audit - All Rights Reserved
                 <h3 className="text-sm font-medium text-slate-900">ROC Curve &amp; AUC Score</h3>
                 <InfoButton
                   title="ROC Curve & AUC Score"
-                  description={`Plots True Positive Rate vs. False Positive Rate across classification thresholds (AUC = ${benchmark.rocAUC}).`}
+                  description={`Plots True Positive Rate vs. False Positive Rate across classification thresholds (AUC = ${activeRocAuc}).`}
                   align="left"
                 />
               </div>
               <span className="px-2.5 py-0.5 text-[10px] font-medium text-emerald-700 rounded-full bg-emerald-50">
-                AUC: {benchmark.rocAUC}
+                AUC: {activeRocAuc}
               </span>
             </div>
 
             <div className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={ROC_CURVE_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <AreaChart data={activeRocData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="fpr" stroke="#64748b" tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} label={{ value: 'FPR', position: 'insideBottomRight', offset: -5, fill: '#64748b', fontSize: 10 }} />
                   <YAxis stroke="#64748b" tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} label={{ value: 'TPR', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 10 }} />
@@ -463,8 +505,8 @@ NeoAegis System Verification Audit - All Rights Reserved
           </div>
 
           <div className="mt-2 text-[11px] font-mono text-slate-500 flex items-center justify-between">
-            <span>ROC Area Under Curve: <strong className="text-emerald-600">{benchmark.rocAUC}</strong> (Near Perfect Separability)</span>
-            <span>Target Threshold: 0.50 Spam Cutoff</span>
+            <span>ROC Area Under Curve: <strong className="text-emerald-600">{activeRocAuc}</strong></span>
+            <span>Target Threshold: 0.50 Cutoff</span>
           </div>
         </div>
 

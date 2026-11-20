@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { SpamMetrics, EmailRecord } from './types';
+import { SpamMetrics, EmailRecord, LocalPredictionResult } from './types';
+import { loadUserTrainedModel, predictWithModel } from './src/lib/localMlEngine';
 
 // Large static lists of rules & weights
 const SPAM_KEYWORDS_FINANCIAL = [
@@ -50,7 +51,12 @@ function calculateEntropy(str: string): number {
 /**
  * Parses and computes the 34 spam indices and metrics on cold input.
  */
-export function analyzeEmail(subject: string, body: string, headers: string): SpamMetrics {
+export function analyzeEmailWithModel(
+  subject: string,
+  body: string,
+  headers: string,
+  senderOverride?: string
+): { metrics: SpamMetrics; modelPrediction: LocalPredictionResult | null } {
   const combinedText = `${subject} ${body}`.toLowerCase();
   
   // 1. Keyword Trigger Metrics
@@ -235,41 +241,22 @@ export function analyzeEmail(subject: string, body: string, headers: string): Sp
   if (senderRecipientDiscrepancy) { baseSpamScore += 15; basePhishingLikelihood += 20; }
   if (unusualHoursTrigger) { baseSpamScore += 10; }
 
-  // Read and apply custom local rules from localStorage if running in browser
-  let localRulesTriggered = 0;
-  let localRulesEvaluated = 0;
-  if (typeof window !== 'undefined') {
-    try {
-      const saved = window.localStorage.getItem('custom_heuristic_rules');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        parsed.forEach((rule: any) => {
-          localRulesEvaluated++;
-          const textToSearch = 
-            rule.target === 'subject' ? subject :
-            rule.target === 'headers' ? headers : body;
-          
-          try {
-            const rx = new RegExp(rule.regex, 'i');
-            if (rx.test(textToSearch)) {
-              localRulesTriggered++;
-              baseSpamScore += Number(rule.weight);
-              if (rule.weight > 0) {
-                basePhishingLikelihood += Math.round(Number(rule.weight) * 0.8);
-              }
-            }
-          } catch (e) {
-            // Invalid regex
-          }
-        });
-      }
-    } catch (e) {
-      // Ignore
-    }
-  }
+  // Check if user has an active locally trained ML model
+  const senderFromHeader =
+    senderOverride ||
+    headers.match(/from:.*?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i)?.[1] ||
+    '';
+  const activeModel = loadUserTrainedModel();
+  let modelPrediction: LocalPredictionResult | null = null;
 
-  const spamScore = Math.min(99, Math.max(2, baseSpamScore));
-  const phishingLikelihood = Math.min(99, Math.max(1, basePhishingLikelihood));
+  let spamScore = Math.min(99, Math.max(2, baseSpamScore));
+  let phishingLikelihood = Math.min(99, Math.max(1, basePhishingLikelihood));
+
+  if (activeModel) {
+    modelPrediction = predictWithModel(subject, body, senderFromHeader, headers, activeModel);
+    spamScore = modelPrediction.spamScore;
+    phishingLikelihood = modelPrediction.phishingLikelihood;
+  }
 
   // Sender reputation mapping based on spamScore
   let senderReputationRank: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
@@ -280,12 +267,13 @@ export function analyzeEmail(subject: string, body: string, headers: string): Sp
 
   const vectorSimilarityScore = Math.round(Math.min(98, 12 + (spamScore * 0.85)));
 
-  // Simulated defense rating represents security posture (inverse of threat level)
-  const defenseRating = Math.round(100 - (spamScore * 0.6) - (phishingLikelihood * 0.4));
+  // Defense rating represents security posture (inverse of threat level)
+  const defenseRating = Math.max(1, Math.round(100 - (spamScore * 0.6) - (phishingLikelihood * 0.4)));
 
   // Compute rule diagnostics
-  let rulesEvaluatedCount = 37 + localRulesEvaluated;
-  let rulesTriggeredCount = localRulesTriggered;
+  const rulesEvaluatedCount = activeModel ? 34 + activeModel.engineeredFeatureNames.length : 34;
+  let rulesTriggeredCount = 0;
+  if (activeModel && modelPrediction && modelPrediction.predictedLabel !== 'legitimate') rulesTriggeredCount++;
   if (financialSensationIndex > 20) rulesTriggeredCount++;
   if (urgencyCoefficient > 20) rulesTriggeredCount++;
   if (authorityMimicryIndex > 20) rulesTriggeredCount++;
@@ -305,41 +293,51 @@ export function analyzeEmail(subject: string, body: string, headers: string): Sp
   if (unusualHoursTrigger) rulesTriggeredCount++;
 
   return {
-    spamScore,
-    phishingLikelihood,
-    senderReputationRank,
-    keywordDangerDensity,
-    urgencyCoefficient,
-    financialSensationIndex,
-    authorityMimicryIndex,
-    subjectSentimentDivergence,
-    capitalizationRatio,
-    punctuationExaggerationIndex,
-    unusualHoursTrigger,
-    suspiciousLinkCount,
-    mismatchedDomainsCount,
-    shortenedUrlsCount,
-    trackingPixelsDetected,
-    ipBlacklistMatches,
-    dkimStatus,
-    spfStatus,
-    dmarcComplianceScore,
-    inboundHopCount,
-    relayServerRiskIndex,
-    imageToTextPayloadRatio,
-    ocrSuspiciousWordsCount,
-    qrCodePresenceRisk,
-    visualColorRiskLevel,
-    metadataAgeOfImageDays,
-    messageEntropy,
-    zeroFontHiddenTextDetected,
-    senderRecipientDiscrepancy,
-    attachmentRiskIndex,
-    vectorSimilarityScore,
-    rulesEvaluatedCount,
-    rulesTriggeredCount,
-    defenseRating
+    metrics: {
+      spamScore,
+      phishingLikelihood,
+      senderReputationRank,
+      keywordDangerDensity,
+      urgencyCoefficient,
+      financialSensationIndex,
+      authorityMimicryIndex,
+      subjectSentimentDivergence,
+      capitalizationRatio,
+      punctuationExaggerationIndex,
+      unusualHoursTrigger,
+      suspiciousLinkCount,
+      mismatchedDomainsCount,
+      shortenedUrlsCount,
+      trackingPixelsDetected,
+      ipBlacklistMatches,
+      dkimStatus,
+      spfStatus,
+      dmarcComplianceScore,
+      inboundHopCount,
+      relayServerRiskIndex,
+      imageToTextPayloadRatio,
+      ocrSuspiciousWordsCount,
+      qrCodePresenceRisk,
+      visualColorRiskLevel,
+      metadataAgeOfImageDays,
+      messageEntropy,
+      zeroFontHiddenTextDetected,
+      senderRecipientDiscrepancy,
+      attachmentRiskIndex,
+      vectorSimilarityScore,
+      rulesEvaluatedCount,
+      rulesTriggeredCount,
+      defenseRating
+    },
+    modelPrediction
   };
+}
+
+/**
+ * Parses and computes the 34 spam indices and metrics on cold input.
+ */
+export function analyzeEmail(subject: string, body: string, headers: string): SpamMetrics {
+  return analyzeEmailWithModel(subject, body, headers).metrics;
 }
 
 // Generate extensive realistic presets for testing

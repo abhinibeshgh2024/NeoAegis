@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   FileSpreadsheet, FileText, ArrowUpDown, ChevronDown, CheckCircle, 
   XCircle, Filter, Download, Info, Activity, ShieldAlert, Upload, RefreshCw
@@ -13,11 +13,13 @@ import {
   ResponsiveContainer, LineChart, Line, Legend
 } from 'recharts';
 import { analyzeEmail } from './spamEngine';
-import { EmailRecord } from './types';
+import { EmailRecord, TrainedModelArtifact } from './types';
 import InfoButton from './src/components/InfoButton';
 
 interface BatchAnalyzerProps {
   onAddEmailRecords: (records: EmailRecord[]) => void;
+  activeModel?: TrainedModelArtifact | null;
+  modelVersion?: number;
 }
 
 // Pre-seeded batch list mimicking standard corpus
@@ -32,7 +34,7 @@ const MOCK_CSV_ROWS = [
   { id: '8', subject: 'Sprint Review schedules tomorrow 10am', sender: 'scrum-master@corporate-internal.com', body: 'Standup and demonstration are scheduled on standard channel room.', actual: 'ham' }
 ];
 
-export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps) {
+export default function BatchAnalyzer({ onAddEmailRecords, activeModel, modelVersion = 0 }: BatchAnalyzerProps) {
   const [emails, setEmails] = useState<any[]>(() => {
     return MOCK_CSV_ROWS.map(r => {
       const metrics = analyzeEmail(r.subject, r.body, `From: ${r.sender}\nDKIM: Pass\nSPF: Pass`);
@@ -47,6 +49,24 @@ export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps)
       };
     });
   });
+
+  // Immediately re-score all rows whenever user trains, imports, or resets their local ML model
+  useEffect(() => {
+    setEmails(prev =>
+      prev.map(r => {
+        const metrics = analyzeEmail(r.subject, r.body, `From: ${r.sender}\nDKIM: Pass\nSPF: Pass`);
+        const predicted = metrics.spamScore > 50 ? 'spam' : 'ham';
+        return {
+          ...r,
+          metrics,
+          predicted,
+          score: metrics.spamScore,
+          spf: metrics.spfStatus,
+          dkim: metrics.dkimStatus
+        };
+      })
+    );
+  }, [modelVersion, activeModel]);
 
   const [sortField, setSortField] = useState<'subject' | 'score' | 'id'>('score');
   const [sortAsc, setSortAsc] = useState(false);
@@ -181,7 +201,13 @@ export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps)
         </div>
 
         {/* File actions */}
-        <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-[#5f6368]">
+            Model:{' '}
+            <strong className={activeModel ? 'text-[#137333]' : 'text-[#1a73e8]'}>
+              {activeModel ? 'Trained Local Model' : 'Baseline Heuristics'}
+            </strong>
+          </span>
           <label className="cursor-pointer bg-[#1a73e8] hover:bg-[#1557b0] text-white font-medium text-xs px-4 py-2.5 rounded-full flex items-center space-x-2 transition shadow-2xs">
             <Upload className="h-4 w-4" />
             <span>Upload Email CSV</span>

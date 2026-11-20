@@ -95,3 +95,84 @@ export interface ChatMessage {
   }[];
 }
 
+export type EmailLabel = 'legitimate' | 'spam' | 'phishing';
+
+export interface TrainingSample {
+  id: string;
+  subject: string;
+  body: string;
+  sender: string;
+  rawHeaders?: string;
+  label: EmailLabel;
+  source?: 'upload' | 'audit_stream' | 'starter' | 'manual';
+}
+
+export interface EpochTelemetry {
+  epoch: number;
+  trainLoss: number;
+  trainAccuracy: number;
+  testAccuracy: number;
+}
+
+export interface TokenWeightEntry {
+  token: string;
+  weightLegitimate: number;
+  weightSpam: number;
+  weightPhishing: number;
+  idf: number;
+}
+
+export interface ModelEvaluationSummary {
+  totalSamples: number;
+  trainCount: number;
+  testCount: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1Score: number;
+  rocAUC: number;
+  tp: number;
+  fp: number;
+  tn: number;
+  fn: number;
+  perClass: Record<EmailLabel, { precision: number; recall: number; f1: number; support: number }>;
+  rocCurve: { fpr: number; tpr: number }[];
+}
+
+export interface TrainedModelArtifact {
+  version: number;
+  modelType: 'tfidf-softmax-logreg';
+  trainedAt: string;
+  ownerUid: string;
+  datasetSize: number;
+  vocabularySize: number;
+  hyperparameters: {
+    trainSplitRatio: number;
+    learningRate: number;
+    smoothingLambda: number;
+    epochs: number;
+  };
+  vocabulary: string[];
+  idf: number[];
+  /** Engineered feature names (length = 7) */
+  engineeredFeatureNames: string[];
+  /** Weights matrix: [classIndex][featureIndex], where class 0=legitimate, 1=spam, 2=phishing */
+  weights: [number[], number[], number[]];
+  /** Bias vector for classes [legitimate, spam, phishing] */
+  bias: [number, number, number];
+  /** Epoch-by-epoch telemetry history */
+  history: EpochTelemetry[];
+  /** Held-out test evaluation metrics */
+  evaluation: ModelEvaluationSummary;
+  /** Top learned feature/token contributors for fast inspection */
+  topTokensByClass: Record<EmailLabel, { token: string; weight: number }[]>;
+}
+
+export interface LocalPredictionResult {
+  predictedLabel: EmailLabel;
+  probabilities: Record<EmailLabel, number>;
+  spamScore: number;
+  phishingLikelihood: number;
+  isCustomModel: boolean;
+  topContributors: { feature: string; contribution: number }[];
+}

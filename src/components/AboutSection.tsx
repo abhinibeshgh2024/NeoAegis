@@ -5,8 +5,8 @@
 
 import React from 'react';
 import {
-  Shield, Lock, Cpu, Languages, FileSpreadsheet, Eye,
-  CheckCircle2, Sparkles, Database, Clock, Mail, Layers, Network, Key
+  Shield, Lock, Cpu, BrainCircuit, Eye,
+  CheckCircle2, Sparkles, Database, Clock, Mail, Layers, Network
 } from 'lucide-react';
 
 /**
@@ -163,7 +163,7 @@ export default function AboutSection({
           </p>
 
           <p className="text-xs sm:text-sm text-[#3c4043] leading-relaxed">
-            Traditional cloud-based email scanners often require uploading confidential corporate correspondence, attachments, or credentials to third-party servers. NeoAegis eliminates this data-egress risk by executing its <strong>34-point heuristic classifier</strong>, <strong>Shadow DOM HTML sanitizer</strong>, <strong>in-browser multi-lingual lure translator</strong>, and <strong>8-dimensional quantized vector embedding engine</strong> locally inside the analyst&rsquo;s browser session, while synchronizing authorized audit trails to each analyst&rsquo;s private, UID-isolated cloud vault.
+            Traditional cloud-based email scanners often require uploading confidential corporate correspondence, attachments, or credentials to external LLM APIs or third-party servers. NeoAegis eliminates this data-egress risk by executing its <strong>34-point heuristic classifier</strong>, <strong>client-side TF-IDF + Logistic Regression ML trainer</strong>, and <strong>8-dimensional quantized vector embedding engine</strong> locally inside the analyst&rsquo;s browser session, while synchronizing authorized audit trails to each analyst&rsquo;s private, UID-isolated vault.
           </p>
 
           <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-4 space-y-2.5">
@@ -177,11 +177,11 @@ export default function AboutSection({
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#1e8e3e] shrink-0 mt-0.5" />
-                <span><strong>Isolated Shadow DOM & Forensics Lab:</strong> Strips malicious XSS scripts, defangs 1x1 tracking pixels, highlights zero-font hidden text stuffing, and validates OpenPGP cryptographic signatures.</span>
+                <span><strong>Client-Side ML Training Studio:</strong> Ingests labeled CSV/JSON datasets or Audit Stream samples, optimizes weights locally over configurable epochs, and persists per-profile models without external APIs.</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#1e8e3e] shrink-0 mt-0.5" />
-                <span><strong>Per-User Zero-Trust Data Isolation:</strong> Every analyst authenticates prior to portal entry; saved emails, threat scores, exported reports, and working hours are strictly isolated to the logged-in user.</span>
+                <span><strong>Per-User Zero-Trust Data Isolation:</strong> Every analyst authenticates prior to portal entry; saved emails, trained model weights, threat scores, and working hours are strictly isolated to the logged-in user.</span>
               </li>
             </ul>
           </div>
@@ -245,10 +245,10 @@ export default function AboutSection({
           </div>
 
           <div className="p-4 rounded-xl bg-[#f8f9fa] border border-[#dadce0] space-y-1.5">
-            <Languages className="w-4 h-4 text-[#1e8e3e]" />
-            <h4 className="font-medium text-[#202124]">Payload Translator Tab</h4>
+            <BrainCircuit className="w-4 h-4 text-[#1e8e3e]" />
+            <h4 className="font-medium text-[#202124]">Local ML Trainer</h4>
             <p className="text-[11px] text-[#5f6368] leading-relaxed">
-              Dedicated 9-language bidirectional translator with auto-detection and adversarial lure scoring.
+              Trains custom TF-IDF + Logistic Regression weights locally on labeled CSV/JSON datasets with zero cloud egress.
             </p>
           </div>
 
@@ -261,10 +261,10 @@ export default function AboutSection({
           </div>
 
           <div className="p-4 rounded-xl bg-[#f8f9fa] border border-[#dadce0] space-y-1.5">
-            <Key className="w-4 h-4 text-[#d93025]" />
-            <h4 className="font-medium text-[#202124]">PGP & k-Anonymity</h4>
+            <Shield className="w-4 h-4 text-[#d93025]" />
+            <h4 className="font-medium text-[#202124]">Per-User Sandbox</h4>
             <p className="text-[11px] text-[#5f6368] leading-relaxed">
-              Verifies OpenPGP signed armor blocks and checks credential leaks via SHA-1 5-char prefix range queries.
+              Isolates trained models, parsed emails, and telemetry metrics strictly per authenticated analyst profile.
             </p>
           </div>
         </div>

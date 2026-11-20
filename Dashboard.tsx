@@ -13,7 +13,7 @@ import {
   AlertTriangle, Key, Terminal, BarChart4, Compass, Info, FileSpreadsheet,
   Download, FileText, Clock, Database, Mail, PlusCircle
 } from 'lucide-react';
-import { EmailRecord, SpamMetrics } from './types';
+import { EmailRecord, SpamMetrics, TrainedModelArtifact } from './types';
 import { logExportToEnclaveProfile } from './src/lib/firebase';
 import InfoButton from './src/components/InfoButton';
 
@@ -27,6 +27,7 @@ interface DashboardProps {
   formattedWorkingDuration?: string;
   onSeedStarterSample?: () => void;
   onExportLogged?: () => void;
+  activeModel?: TrainedModelArtifact | null;
 }
 
 export default function Dashboard({
@@ -38,7 +39,8 @@ export default function Dashboard({
   emailsParsedCount = 0,
   formattedWorkingDuration = '00h 00m 00s',
   onSeedStarterSample,
-  onExportLogged
+  onExportLogged,
+  activeModel
 }: DashboardProps) {
   const [activeMetricTab, setActiveMetricTab] = useState<'all' | 'critical' | 'technical'>('all');
 
@@ -272,13 +274,23 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
 
       {/* Exporting & Reporting Action Panel */}
       <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-5 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <h3 className="text-base font-medium text-[#202124]">Security Forensic Reporting & Personal Vault</h3>
-          <InfoButton
-            title="Forensic Reporting & Personal Vault"
-            description="All parsed emails, threat scores, and exported Markdown/CSV reports are isolated strictly to your personal analyst profile."
-            align="left"
-          />
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-base font-medium text-[#202124]">Security Forensic Reporting & Personal Vault</h3>
+            <InfoButton
+              title="Forensic Reporting & Personal Vault"
+              description="All parsed emails, threat scores, and exported Markdown/CSV reports are isolated strictly to your personal analyst profile."
+              align="left"
+            />
+          </div>
+          <span className="text-xs text-[#5f6368]">
+            Active Scoring Engine:{' '}
+            <strong className={activeModel ? 'text-[#137333]' : 'text-[#1a73e8]'}>
+              {activeModel
+                ? `Local Trained Model (${activeModel.vocabularySize} tokens · ${(activeModel.evaluation.accuracy * 100).toFixed(1)}% Acc)`
+                : 'Baseline 34-Metric Heuristic Engine'}
+            </strong>
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
           {records.length === 0 && onSeedStarterSample && (

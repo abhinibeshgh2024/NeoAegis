@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  LayoutDashboard, Mail, Image, FileSpreadsheet, Languages, Bot, Gauge,
+  LayoutDashboard, Mail, Image, FileSpreadsheet, BrainCircuit, Bot, Gauge,
   ShieldCheck, Activity, Sparkles, Clock, AlertTriangle, 
   Settings, Shield, ChevronRight, CheckCircle2, XCircle, User, LogIn, UserPlus, LogOut, Lock, X,
   Menu, Info, Database, PlusCircle, Phone, Moon, Sun, Calendar
@@ -30,21 +30,21 @@ import {
   incrementUserWorkingSeconds,
   formatWorkingDuration
 } from './src/lib/firebase';
+import { loadUserTrainedModel, setActiveMlUserUid } from './src/lib/localMlEngine';
 import Dashboard from './Dashboard';
 import EmailAnalyzer from './EmailAnalyzer';
 import ImageAnalyzer from './ImageAnalyzer';
 import BatchAnalyzer from './BatchAnalyzer';
-import TranslatorLab from './src/components/TranslatorLab';
 import ChatAssistant from './ChatAssistant';
 import PerformanceMetrics from './PerformanceMetrics';
-import ForensicsLab from './ForensicsLab';
+import TrainerLab from './src/components/TrainerLab';
 import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
 import InfoButton from './src/components/InfoButton';
 import { MOCK_EMAILS, analyzeEmail } from './spamEngine';
-import { EmailRecord } from './types';
+import { EmailRecord, TrainedModelArtifact } from './types';
 
-type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'translator' | 'rag' | 'metrics' | 'forensics' | 'profile' | 'about';
+type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'rag' | 'metrics' | 'trainer' | 'profile' | 'about';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<PortalTab>('dashboard');
@@ -90,12 +90,14 @@ export default function App() {
   const selectedHeaderCountry =
     COUNTRY_DIAL_CODES.find(c => c.code === headerCountryCode) || COUNTRY_DIAL_CODES[0];
 
-  // Per-User Isolated Emails & Telemetry State
+  // Per-User Isolated Emails, Local ML Model & Telemetry State
   const [emails, setEmails] = useState<EmailRecord[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<EmailRecord | null>(null);
   const [savedDataCount, setSavedDataCount] = useState<number>(0);
   const [emailsParsedCount, setEmailsParsedCount] = useState<number>(0);
   const [workingSeconds, setWorkingSeconds] = useState<number>(0);
+  const [activeModel, setActiveModel] = useState<TrainedModelArtifact | null>(null);
+  const [modelVersion, setModelVersion] = useState<number>(0);
 
   // Load strict per-user isolated records & telemetry
   const syncUserIsolatedVault = async (uid: string) => {
@@ -108,8 +110,8 @@ export default function App() {
         return item.fullRecord as EmailRecord;
       }
       const fallbackBody = item.body || item.bodySnippet || item.subject || '';
-      const rawHeaders = item.rawHeaders || 'Received: by neoaegis.local; SPF=pass; DKIM=pass';
-      const analyzed = analyzeEmail(fallbackBody, item.subject || '', item.sender || '');
+      const rawHeaders = item.rawHeaders || `From: ${item.sender || 'unknown@sender.org'}\nReceived: by neoaegis.local; SPF=pass; DKIM=pass`;
+      const analyzed = analyzeEmail(item.subject || '', fallbackBody, rawHeaders);
       return {
         id: item.id || item.docId || `mail-${Date.now()}`,
         subject: item.subject || 'Untitled Message',
@@ -143,9 +145,15 @@ export default function App() {
       if (u) {
         setAuthMenuOpen(false);
         setHeaderAuthError('');
+        setActiveMlUserUid(u.uid);
+        setActiveModel(loadUserTrainedModel(u.uid));
+        setModelVersion(v => v + 1);
         syncUserIsolatedVault(u.uid);
       } else {
-        // Strict isolation: clear all user data immediately on sign-out or unauthenticated state
+        // Strict isolation: clear all user data and active model immediately on sign-out
+        setActiveMlUserUid(null);
+        setActiveModel(null);
+        setModelVersion(v => v + 1);
         setEmails([]);
         setSelectedEmail(null);
         setSavedDataCount(0);
@@ -155,6 +163,28 @@ export default function App() {
     });
     return unsubscribe;
   }, []);
+
+  // Re-score vault emails immediately whenever user trains, imports, or resets local ML weights
+  const handleModelUpdated = (nextModel: TrainedModelArtifact | null) => {
+    setActiveModel(nextModel);
+    setModelVersion(v => v + 1);
+
+    setEmails(prev => {
+      const updated = prev.map(mail => {
+        const reMetrics = analyzeEmail(mail.subject, mail.body, mail.rawHeaders);
+        return {
+          ...mail,
+          isSpam: reMetrics.spamScore > 50 || reMetrics.phishingLikelihood > 45,
+          metrics: reMetrics
+        };
+      });
+      setSelectedEmail(curr => {
+        if (!curr) return updated[0] || null;
+        return updated.find(u => u.id === curr.id) || updated[0] || null;
+      });
+      return updated;
+    });
+  };
 
   // Per-user Working Hours Duration live tracker (increments every second while logged in)
   useEffect(() => {
@@ -312,10 +342,9 @@ export default function App() {
     { id: 'email', label: 'Mail Body Scanner', icon: Mail },
     { id: 'image', label: 'Image OCR Inspector', icon: Image },
     { id: 'batch', label: 'Batch CSV Auditor', icon: FileSpreadsheet },
-    { id: 'translator', label: 'Payload Translator', icon: Languages },
     { id: 'rag', label: 'SecOps RAG Assistant', icon: Bot },
     { id: 'metrics', label: 'Accuracy & F1 Matrix', icon: Gauge },
-    { id: 'forensics', label: 'Forensics Lab', icon: Shield },
+    { id: 'trainer', label: 'Trainer', icon: BrainCircuit },
     { id: 'profile', label: 'Profile Enclave', icon: User },
     { id: 'about', label: 'About NeoAegis', icon: Info }
   ];
@@ -461,7 +490,7 @@ export default function App() {
                     </div>
                     <InfoButton
                       title="34-Vector Sandbox"
-                      description="Client-side email forensics, OCR inspection, multi-lingual payload translator, and 8-D semantic clustering."
+                      description="Client-side email analysis, OCR inspection, local ML model trainer, and 8-D semantic clustering."
                       align="right"
                     />
                   </div>
@@ -1024,6 +1053,7 @@ export default function App() {
                 formattedWorkingDuration={formatWorkingDuration(workingSeconds)}
                 emailsParsedCount={emailsParsedCount}
                 currentUserUid={currentUser?.uid}
+                activeModel={activeModel}
                 onExportLogged={() => {
                   if (currentUser) {
                     syncUserIsolatedVault(currentUser.uid);
@@ -1036,7 +1066,9 @@ export default function App() {
             {currentTab === 'email' && (
               <EmailAnalyzer 
                 selectedEmail={selectedEmail} 
-                onAnalyzeFinished={handleSingleEmailAnalyzed} 
+                onAnalyzeFinished={handleSingleEmailAnalyzed}
+                activeModel={activeModel}
+                modelVersion={modelVersion}
               />
             )}
 
@@ -1046,12 +1078,10 @@ export default function App() {
 
             {currentTab === 'batch' && (
               <BatchAnalyzer 
-                onAddEmailRecords={handleAddNewEmails} 
+                onAddEmailRecords={handleAddNewEmails}
+                activeModel={activeModel}
+                modelVersion={modelVersion}
               />
-            )}
-
-            {currentTab === 'translator' && (
-              <TranslatorLab selectedEmail={selectedEmail} />
             )}
 
             {currentTab === 'rag' && (
@@ -1059,13 +1089,18 @@ export default function App() {
             )}
 
             {currentTab === 'metrics' && (
-              <PerformanceMetrics records={emails} />
+              <PerformanceMetrics 
+                records={emails}
+                activeModel={activeModel}
+              />
             )}
 
-            {currentTab === 'forensics' && (
-              <ForensicsLab 
-                selectedEmail={selectedEmail} 
-                onUpdateEmailMetrics={handleSingleEmailAnalyzed}
+            {currentTab === 'trainer' && currentUser && (
+              <TrainerLab
+                currentUserUid={currentUser.uid}
+                auditEmails={emails}
+                activeModel={activeModel}
+                onModelUpdated={handleModelUpdated}
               />
             )}
 

@@ -8,16 +8,18 @@ import {
   ShieldAlert, ShieldCheck, Mail, FileText, Settings, RefreshCw, 
   HelpCircle, AlertTriangle, AlertCircle, Sparkles, AlertOctagon, CheckCircle2
 } from 'lucide-react';
-import { analyzeEmail, MOCK_EMAILS } from './spamEngine';
-import { EmailRecord, SpamMetrics } from './types';
+import { analyzeEmailWithModel, MOCK_EMAILS } from './spamEngine';
+import { EmailRecord, SpamMetrics, TrainedModelArtifact, LocalPredictionResult } from './types';
 import InfoButton from './src/components/InfoButton';
 
 interface EmailAnalyzerProps {
   onAnalyzeFinished: (record: EmailRecord) => void;
   selectedEmail: EmailRecord | null;
+  activeModel?: TrainedModelArtifact | null;
+  modelVersion?: number;
 }
 
-export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: EmailAnalyzerProps) {
+export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, activeModel, modelVersion = 0 }: EmailAnalyzerProps) {
   // Config state
   const [subject, setSubject] = useState('');
   const [sender, setSender] = useState('');
@@ -27,6 +29,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
 
   // Active metrics output state
   const [metrics, setMetrics] = useState<SpamMetrics | null>(null);
+  const [modelPrediction, setModelPrediction] = useState<LocalPredictionResult | null>(null);
 
   // Initialize form when a preset / selected email is updated from dashboard
   useEffect(() => {
@@ -36,29 +39,39 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
       setRecipient(selectedEmail.recipient);
       setBody(selectedEmail.body);
       setHeaders(selectedEmail.rawHeaders);
-      
-      const res = analyzeEmail(selectedEmail.subject, selectedEmail.body, selectedEmail.rawHeaders);
-      setMetrics(res);
+
+      const res = analyzeEmailWithModel(selectedEmail.subject, selectedEmail.body, selectedEmail.rawHeaders, selectedEmail.sender);
+      setMetrics(res.metrics);
+      setModelPrediction(res.modelPrediction);
     } else if (MOCK_EMAILS.length > 0) {
-      // Default to the first mock email
       const first = MOCK_EMAILS[0];
       setSubject(first.subject);
       setSender(first.sender);
       setRecipient(first.recipient);
       setBody(first.body);
       setHeaders(first.rawHeaders);
-      setMetrics(first.metrics);
+      const res = analyzeEmailWithModel(first.subject, first.body, first.rawHeaders, first.sender);
+      setMetrics(res.metrics);
+      setModelPrediction(res.modelPrediction);
     }
   }, [selectedEmail]);
 
+  // Re-evaluate immediately when user trains, imports, or resets their local ML model
+  useEffect(() => {
+    if (!subject && !body) return;
+    const cleanHeaders = headers || `From: ${sender}\nTo: ${recipient}\nSubject: ${subject}\nDKIM: Pass\nSPF: Pass`;
+    const res = analyzeEmailWithModel(subject, body, cleanHeaders, sender);
+    setMetrics(res.metrics);
+    setModelPrediction(res.modelPrediction);
+  }, [modelVersion, activeModel]);
+
   // Handle live re-analysis
   const handleAnalyze = () => {
-    // Generate headers if empty
     const cleanHeaders = headers || `From: ${sender}\nTo: ${recipient}\nSubject: ${subject}\nDKIM: Pass\nSPF: Pass`;
-    const computed = analyzeEmail(subject, body, cleanHeaders);
-    setMetrics(computed);
+    const res = analyzeEmailWithModel(subject, body, cleanHeaders, sender);
+    setMetrics(res.metrics);
+    setModelPrediction(res.modelPrediction);
 
-    // callback upward
     const newRecord: EmailRecord = {
       id: selectedEmail?.id || `custom-${Date.now()}`,
       subject,
@@ -67,8 +80,8 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
       body,
       rawHeaders: cleanHeaders,
       timestamp: new Date().toISOString(),
-      isSpam: computed.spamScore > 50 || computed.phishingLikelihood > 45,
-      metrics: computed
+      isSpam: res.metrics.spamScore > 50 || res.metrics.phishingLikelihood > 45,
+      metrics: res.metrics
     };
 
     onAnalyzeFinished(newRecord);
@@ -81,8 +94,14 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
     setRecipient(preset.recipient);
     setBody(preset.body);
     setHeaders(preset.rawHeaders);
-    setMetrics(preset.metrics);
-    onAnalyzeFinished(preset);
+    const res = analyzeEmailWithModel(preset.subject, preset.body, preset.rawHeaders, preset.sender);
+    setMetrics(res.metrics);
+    setModelPrediction(res.modelPrediction);
+    onAnalyzeFinished({
+      ...preset,
+      isSpam: res.metrics.spamScore > 50 || res.metrics.phishingLikelihood > 45,
+      metrics: res.metrics
+    });
   };
 
   return (
@@ -218,6 +237,32 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
               }`}>
                 {metrics.spamScore > 50 ? 'Threat Detected' : 'Clean Envelope'}
               </span>
+            </div>
+
+            {/* Active Local Model Inference Strip */}
+            <div className="bg-white border border-slate-200 rounded-xl p-3.5 text-xs space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-slate-500 font-medium">
+                  Inference Engine:{' '}
+                  <strong className={modelPrediction ? 'text-emerald-700' : 'text-indigo-700'}>
+                    {modelPrediction ? 'Custom Trained Local Model' : 'Baseline Heuristic Weights'}
+                  </strong>
+                </span>
+                {modelPrediction && (
+                  <span className="font-mono text-[11px] uppercase font-semibold text-slate-800">
+                    Class: {modelPrediction.predictedLabel} ({Math.round((modelPrediction.probabilities[modelPrediction.predictedLabel] || 0) * 100)}%)
+                  </span>
+                )}
+              </div>
+              {modelPrediction && modelPrediction.topContributors.length > 0 && (
+                <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono text-slate-600">
+                  {modelPrediction.topContributors.slice(0, 4).map(c => (
+                    <span key={c.feature}>
+                      {c.feature}: <strong className="text-indigo-700">{c.contribution >= 0 ? `+${c.contribution}` : c.contribution}</strong>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Double Radial dial bars mock */}
