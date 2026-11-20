@@ -204,8 +204,10 @@ export default function BatchAnalyzer({ onAddEmailRecords, activeModel, modelVer
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs text-[#5f6368]">
             Model:{' '}
-            <strong className={activeModel ? 'text-[#137333]' : 'text-[#1a73e8]'}>
-              {activeModel ? 'Trained Local Model' : 'Baseline Heuristics'}
+            <strong className={activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0) ? 'text-[#137333]' : 'text-[#1a73e8]'}>
+              {activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0)
+                ? 'Trained Local Model'
+                : 'Baseline Heuristics'}
             </strong>
           </span>
           <label className="cursor-pointer bg-[#1a73e8] hover:bg-[#1557b0] text-white font-medium text-xs px-4 py-2.5 rounded-full flex items-center space-x-2 transition shadow-2xs">

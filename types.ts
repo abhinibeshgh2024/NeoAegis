@@ -154,6 +154,83 @@ export interface ModelEvaluationSummary {
   confusionMatrix3x3?: number[][];
 }
 
+export interface EvaluatedImageTestCase {
+  id: string;
+  fileName: string;
+  actualLabel: EmailLabel;
+  predictedLabel: EmailLabel;
+  spamScore: number;
+  confidence: number;
+  outcome: 'TP' | 'TN' | 'FP' | 'FN';
+  correct: boolean;
+}
+
+export interface ImageVisionTelemetry {
+  colorSpectrum: { red: number; green: number; blue: number; yellow: number };
+  saturationSpike: number;
+  edgeTextDensity: number;
+  qrPatternScore: number;
+  qrCodeDetected: boolean;
+  quantizedEntropy: number;
+  aspectRatio: number;
+  fileSizeKb: number;
+}
+
+export interface ImageTrainingSample {
+  id: string;
+  fileName: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  ocrText: string;
+  label: EmailLabel;
+  source: 'upload' | 'inspector' | 'starter';
+  extractedFeatures: number[];
+  telemetry: ImageVisionTelemetry;
+}
+
+export interface ImageModelEvaluationSummary {
+  totalSamples: number;
+  trainCount: number;
+  testCount: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1Score: number;
+  rocAUC: number;
+  tp: number;
+  fp: number;
+  tn: number;
+  fn: number;
+  confusionMatrix3x3: number[][];
+  perClass: Record<EmailLabel, { precision: number; recall: number; f1: number; support: number }>;
+  testCases: EvaluatedImageTestCase[];
+}
+
+export interface TrainedImageModelArtifact {
+  version: number;
+  modelType: 'vision-pixel-softmax-logreg';
+  trainedAt: string;
+  datasetSize: number;
+  featureNames: string[];
+  ocrVocabulary: string[];
+  ocrIdf: number[];
+  weights: [number[], number[], number[]];
+  bias: [number, number, number];
+  history: EpochTelemetry[];
+  evaluation: ImageModelEvaluationSummary;
+  featureImportance: { feature: string; legitimate: number; spam: number; phishing: number }[];
+}
+
+export interface ImagePredictionResult {
+  predictedLabel: EmailLabel;
+  probabilities: Record<EmailLabel, number>;
+  spamScore: number;
+  phishingLikelihood: number;
+  isCustomModel: boolean;
+  topContributors: { feature: string; contribution: number }[];
+}
+
 export interface TrainedModelArtifact {
   version: number;
   modelType: 'tfidf-softmax-logreg';
@@ -181,6 +258,8 @@ export interface TrainedModelArtifact {
   evaluation: ModelEvaluationSummary;
   /** Top learned feature/token contributors for fast inspection */
   topTokensByClass: Record<EmailLabel, { token: string; weight: number }[]>;
+  /** Optional trained Visual / Image Training Unit artifact */
+  imageUnit?: TrainedImageModelArtifact;
 }
 
 export interface LocalPredictionResult {

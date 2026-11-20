@@ -7,7 +7,7 @@ import React, { useState, useMemo } from 'react';
 import { 
   Target, Activity, Cpu, CheckCircle2, AlertTriangle, 
   XCircle, Zap, Play, RefreshCw, Download, 
-  TrendingUp, Layers, Check, ArrowUpRight, Copy, Table2, Search, Eye
+  TrendingUp, Layers, Check, ArrowUpRight, Copy, Table2, Search, Eye, Image as ImageIcon
 } from 'lucide-react';
 import { 
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, 
@@ -222,8 +222,25 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
       };
     });
 
+    const imageUnitCases: EvaluatedTestCase[] = (activeModel?.imageUnit?.evaluation.testCases || []).map(ic => ({
+      id: ic.id,
+      subject: `[Image] ${ic.fileName}`,
+      sender: 'image-vision-unit',
+      actualLabel: ic.actualLabel,
+      predictedLabel: ic.predictedLabel,
+      spamScore: ic.spamScore,
+      confidence: ic.confidence,
+      outcome: ic.outcome,
+      correct: ic.correct,
+      source: 'test_split'
+    }));
+
     if (activeModel && activeModel.evaluation.testCases && activeModel.evaluation.testCases.length > 0) {
-      return [...activeModel.evaluation.testCases, ...vaultCases];
+      return [...activeModel.evaluation.testCases, ...imageUnitCases, ...vaultCases];
+    }
+
+    if (imageUnitCases.length > 0) {
+      return [...imageUnitCases, ...vaultCases];
     }
 
     // Baseline validation suite evaluated live when no custom model is active
@@ -477,7 +494,7 @@ ${formattedTestCasesText}
             Source:{' '}
             <strong className={activeModel ? 'text-emerald-700' : 'text-indigo-700'}>
               {activeModel
-                ? `Trained Local Model (${activeModel.evaluation.testCount} held-out test samples + ${records.length} vault records)`
+                ? `${activeModel.datasetSize > 0 ? `Trained Local Text (${activeModel.evaluation.testCount} test)` : 'Text Baseline'}${activeModel.imageUnit ? ` + Image Unit (${activeModel.imageUnit.evaluation.testCount} test)` : ''} + ${records.length} vault records`
                 : `Baseline Heuristics (${benchmark.totalTested} baseline + ${records.length} vault records)`}
             </strong>
           </span>
@@ -1113,7 +1130,54 @@ ${formattedTestCasesText}
         </div>
       </div>
 
-      {/* 7. Latency & Hardware Efficiency Benchmarks */}
+      {/* 7. Image Training Unit Evaluation Summary (Shown when Image Unit is trained) */}
+      {activeModel?.imageUnit && (
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4 shadow-3xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+            <div className="flex items-center gap-2">
+              <ImageIcon className="w-4 h-4 text-indigo-600" />
+              <h3 className="text-sm font-medium text-slate-900">Image Training Unit Performance</h3>
+              <InfoButton
+                title="Image Training Unit Metrics"
+                description="Held-out visual evaluation metrics from your locally trained HTML5 Canvas pixel + OCR classifier."
+                align="left"
+              />
+            </div>
+            <span className="text-xs font-mono text-slate-600 tabular-nums">
+              {activeModel.imageUnit.datasetSize} total images &middot; {activeModel.imageUnit.evaluation.testCount} held-out test
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs tabular-nums">
+            <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
+              <span className="text-slate-500 block">Image Accuracy</span>
+              <span className="text-xl font-mono font-semibold text-emerald-700">
+                {(activeModel.imageUnit.evaluation.accuracy * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
+              <span className="text-slate-500 block">Image F1 Score</span>
+              <span className="text-xl font-mono font-semibold text-indigo-700">
+                {(activeModel.imageUnit.evaluation.f1Score * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
+              <span className="text-slate-500 block">Precision / Recall</span>
+              <span className="text-xl font-mono font-semibold text-amber-700">
+                {(activeModel.imageUnit.evaluation.precision * 100).toFixed(0)}% / {(activeModel.imageUnit.evaluation.recall * 100).toFixed(0)}%
+              </span>
+            </div>
+            <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
+              <span className="text-slate-500 block">Image ROC AUC</span>
+              <span className="text-xl font-mono font-semibold text-blue-700">
+                {activeModel.imageUnit.evaluation.rocAUC.toFixed(3)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 8. Latency & Hardware Efficiency Benchmarks */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 tabular-nums">
         <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs flex items-center justify-between">
           <div>

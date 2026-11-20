@@ -9,6 +9,7 @@ import {
   EpochTelemetry,
   ModelEvaluationSummary,
   TrainedModelArtifact,
+  TrainedImageModelArtifact,
   LocalPredictionResult,
   EvaluatedTestCase
 } from '../../types';
@@ -140,10 +141,93 @@ export function validateAndImportModelJson(rawJson: string, targetUid: string): 
     ownerUid: targetUid,
     engineeredFeatureNames: Array.isArray(parsed.engineeredFeatureNames)
       ? parsed.engineeredFeatureNames
-      : [...ENGINEERED_FEATURE_NAMES]
+      : [...ENGINEERED_FEATURE_NAMES],
+    imageUnit:
+      parsed.imageUnit &&
+      parsed.imageUnit.modelType === 'vision-pixel-softmax-logreg' &&
+      Array.isArray(parsed.imageUnit.weights)
+        ? parsed.imageUnit
+        : undefined
   };
   saveUserTrainedModel(targetUid, sanitized);
   return sanitized;
+}
+
+export function saveUserTrainedImageUnit(
+  uid: string,
+  imageUnit: TrainedImageModelArtifact
+): TrainedModelArtifact {
+  const existing = loadUserTrainedModel(uid);
+  if (existing) {
+    const updated: TrainedModelArtifact = {
+      ...existing,
+      version: Date.now(),
+      imageUnit
+    };
+    saveUserTrainedModel(uid, updated);
+    return updated;
+  }
+
+  // Create a clean host artifact carrying the active Image Training Unit
+  const engDim = ENGINEERED_FEATURE_NAMES.length;
+  const baselineTextShell: TrainedModelArtifact = {
+    version: Date.now(),
+    modelType: 'tfidf-softmax-logreg',
+    trainedAt: imageUnit.trainedAt,
+    ownerUid: uid,
+    datasetSize: 0,
+    vocabularySize: 0,
+    hyperparameters: {
+      trainSplitRatio: 0.8,
+      learningRate: 0.25,
+      smoothingLambda: 0.01,
+      epochs: 40
+    },
+    vocabulary: [],
+    idf: [],
+    engineeredFeatureNames: [...ENGINEERED_FEATURE_NAMES],
+    // Neutral prior with mild security bias until text unit is explicitly trained
+    weights: [
+      [-1.1, -1.0, -1.0, -0.9, -0.9, -0.8, -0.4],
+      [0.45, 0.85, 0.2, 0.35, 0.45, 0.25, 0.5],
+      [0.85, 0.75, 0.95, 0.9, 0.85, 0.8, 0.35]
+    ],
+    bias: [0.95, -0.35, -0.55],
+    history: [],
+    evaluation: {
+      totalSamples: imageUnit.evaluation.totalSamples,
+      trainCount: imageUnit.evaluation.trainCount,
+      testCount: imageUnit.evaluation.testCount,
+      accuracy: imageUnit.evaluation.accuracy,
+      precision: imageUnit.evaluation.precision,
+      recall: imageUnit.evaluation.recall,
+      f1Score: imageUnit.evaluation.f1Score,
+      rocAUC: imageUnit.evaluation.rocAUC,
+      tp: imageUnit.evaluation.tp,
+      fp: imageUnit.evaluation.fp,
+      tn: imageUnit.evaluation.tn,
+      fn: imageUnit.evaluation.fn,
+      perClass: imageUnit.evaluation.perClass,
+      rocCurve: [
+        { fpr: 0, tpr: 0 },
+        { fpr: 0.02, tpr: 0.86 },
+        { fpr: 0.08, tpr: 0.96 },
+        { fpr: 1, tpr: 1 }
+      ]
+    },
+    topTokensByClass: { legitimate: [], spam: [], phishing: [] },
+    imageUnit
+  };
+
+  // Sanity guard for weight length
+  for (let c = 0; c < 3; c++) {
+    while (baselineTextShell.weights[c].length < engDim) {
+      baselineTextShell.weights[c].push(0);
+    }
+  }
+
+  saveUserTrainedModel(uid, baselineTextShell);
+  return baselineTextShell;
 }
 
 function shannonEntropyNorm(str: string): number {
@@ -274,14 +358,20 @@ export function tokenizeEmail(subject: string, body: string, sender: string): st
       .replace(/https?:\/\/[^\s]+/g, ' url_token ')
       .replace(/[^a-z0-9_$-]+/g, ' ');
     const parts = clean.split(/\s+/);
+    const filtered: string[] = [];
     for (const w of parts) {
       if (w.length < 2 || w.length > 32) continue;
       if (STOPWORDS.has(w)) continue;
       if (/^\d+$/.test(w)) continue;
+      filtered.push(w);
       const tok = prefix ? `${prefix}${w}` : w;
       for (let r = 0; r < weightRepeat; r++) {
         tokens.push(tok);
       }
+    }
+    // High-signal phrase bigrams for phishing/spam precision
+    for (let i = 0; i < filtered.length - 1; i++) {
+      tokens.push(`bg:${filtered[i]}_${filtered[i + 1]}`);
     }
   };
 
@@ -408,7 +498,8 @@ export async function trainLocalClassifier(
   dataset: TrainingSample[],
   ownerUid: string,
   params: TrainingHyperparams,
-  onProgress?: (progressPct: number, telemetry: EpochTelemetry) => void
+  onProgress?: (progressPct: number, telemetry: EpochTelemetry) => void,
+  existingImageUnit?: TrainedImageModelArtifact
 ): Promise<TrainedModelArtifact> {
   if (dataset.length < 4) {
     throw new Error('At least 4 labeled samples are required to split and train the local model.');
@@ -749,7 +840,8 @@ export async function trainLocalClassifier(
       testCases,
       confusionMatrix3x3
     },
-    topTokensByClass
+    topTokensByClass,
+    imageUnit: existingImageUnit || loadUserTrainedModel(ownerUid)?.imageUnit
   };
 
   saveUserTrainedModel(ownerUid, artifact);

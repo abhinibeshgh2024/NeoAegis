@@ -247,12 +247,15 @@ export function analyzeEmailWithModel(
     headers.match(/from:.*?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i)?.[1] ||
     '';
   const activeModel = loadUserTrainedModel();
+  const hasTrainedTextUnit = Boolean(
+    activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0)
+  );
   let modelPrediction: LocalPredictionResult | null = null;
 
   let spamScore = Math.min(99, Math.max(2, baseSpamScore));
   let phishingLikelihood = Math.min(99, Math.max(1, basePhishingLikelihood));
 
-  if (activeModel) {
+  if (activeModel && hasTrainedTextUnit) {
     modelPrediction = predictWithModel(subject, body, senderFromHeader, headers, activeModel);
     spamScore = modelPrediction.spamScore;
     phishingLikelihood = modelPrediction.phishingLikelihood;
@@ -271,9 +274,9 @@ export function analyzeEmailWithModel(
   const defenseRating = Math.max(1, Math.round(100 - (spamScore * 0.6) - (phishingLikelihood * 0.4)));
 
   // Compute rule diagnostics
-  const rulesEvaluatedCount = activeModel ? 34 + activeModel.engineeredFeatureNames.length : 34;
+  const rulesEvaluatedCount = hasTrainedTextUnit && activeModel ? 34 + activeModel.engineeredFeatureNames.length : 34;
   let rulesTriggeredCount = 0;
-  if (activeModel && modelPrediction && modelPrediction.predictedLabel !== 'legitimate') rulesTriggeredCount++;
+  if (hasTrainedTextUnit && modelPrediction && modelPrediction.predictedLabel !== 'legitimate') rulesTriggeredCount++;
   if (financialSensationIndex > 20) rulesTriggeredCount++;
   if (urgencyCoefficient > 20) rulesTriggeredCount++;
   if (authorityMimicryIndex > 20) rulesTriggeredCount++;

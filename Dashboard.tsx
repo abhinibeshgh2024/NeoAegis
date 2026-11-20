@@ -287,7 +287,16 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
             Active Scoring Engine:{' '}
             <strong className={activeModel ? 'text-[#137333]' : 'text-[#1a73e8]'}>
               {activeModel
-                ? `Local Trained Model (${activeModel.vocabularySize} tokens · ${(activeModel.evaluation.accuracy * 100).toFixed(1)}% Acc)`
+                ? [
+                    activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0
+                      ? `Text ML (${activeModel.vocabularySize} tokens · ${(activeModel.evaluation.accuracy * 100).toFixed(1)}% Acc)`
+                      : 'Text Baseline',
+                    activeModel.imageUnit
+                      ? `Image Unit (${activeModel.imageUnit.datasetSize} imgs · ${(activeModel.imageUnit.evaluation.accuracy * 100).toFixed(1)}% Acc)`
+                      : null
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
                 : 'Baseline 34-Metric Heuristic Engine'}
             </strong>
           </span>

@@ -42,7 +42,7 @@ import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
 import InfoButton from './src/components/InfoButton';
 import { MOCK_EMAILS, analyzeEmail } from './spamEngine';
-import { EmailRecord, TrainedModelArtifact } from './types';
+import { EmailRecord, TrainedModelArtifact, TrainingSample, ImageTrainingSample } from './types';
 
 type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'rag' | 'metrics' | 'trainer' | 'profile' | 'about';
 
@@ -98,6 +98,9 @@ export default function App() {
   const [workingSeconds, setWorkingSeconds] = useState<number>(0);
   const [activeModel, setActiveModel] = useState<TrainedModelArtifact | null>(null);
   const [modelVersion, setModelVersion] = useState<number>(0);
+  const [incomingEmailSamples, setIncomingEmailSamples] = useState<TrainingSample[]>([]);
+  const [incomingImageSamples, setIncomingImageSamples] = useState<ImageTrainingSample[]>([]);
+  const [preferredTrainerUnit, setPreferredTrainerUnit] = useState<'text' | 'image'>('text');
 
   // Load strict per-user isolated records & telemetry
   const syncUserIsolatedVault = async (uid: string) => {
@@ -159,6 +162,8 @@ export default function App() {
         setSavedDataCount(0);
         setEmailsParsedCount(0);
         setWorkingSeconds(0);
+        setIncomingEmailSamples([]);
+        setIncomingImageSamples([]);
       }
     });
     return unsubscribe;
@@ -1069,11 +1074,23 @@ export default function App() {
                 onAnalyzeFinished={handleSingleEmailAnalyzed}
                 activeModel={activeModel}
                 modelVersion={modelVersion}
+                onSendToTrainer={(sample) => {
+                  setIncomingEmailSamples(prev => [sample, ...prev]);
+                  setPreferredTrainerUnit('text');
+                }}
               />
             )}
 
             {currentTab === 'image' && (
-              <ImageAnalyzer />
+              <ImageAnalyzer
+                activeModel={activeModel}
+                modelVersion={modelVersion}
+                onSendToTrainer={(imgSample) => {
+                  setIncomingImageSamples(prev => [imgSample, ...prev]);
+                  setPreferredTrainerUnit('image');
+                }}
+                onSaveScanToVault={handleSingleEmailAnalyzed}
+              />
             )}
 
             {currentTab === 'batch' && (
@@ -1101,6 +1118,9 @@ export default function App() {
                 auditEmails={emails}
                 activeModel={activeModel}
                 onModelUpdated={handleModelUpdated}
+                incomingEmailSamples={incomingEmailSamples}
+                incomingImageSamples={incomingImageSamples}
+                preferredUnit={preferredTrainerUnit}
               />
             )}
 

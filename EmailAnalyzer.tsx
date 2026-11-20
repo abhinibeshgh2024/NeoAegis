@@ -4,12 +4,12 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { 
-  ShieldAlert, ShieldCheck, Mail, FileText, Settings, RefreshCw, 
-  HelpCircle, AlertTriangle, AlertCircle, Sparkles, AlertOctagon, CheckCircle2
+import {
+  ShieldAlert, Mail, RefreshCw, HelpCircle, AlertTriangle,
+  AlertCircle, Sparkles, AlertOctagon, CheckCircle2, BrainCircuit
 } from 'lucide-react';
 import { analyzeEmailWithModel, MOCK_EMAILS } from './spamEngine';
-import { EmailRecord, SpamMetrics, TrainedModelArtifact, LocalPredictionResult } from './types';
+import { EmailLabel, EmailRecord, SpamMetrics, TrainedModelArtifact, LocalPredictionResult, TrainingSample } from './types';
 import InfoButton from './src/components/InfoButton';
 
 interface EmailAnalyzerProps {
@@ -17,9 +17,10 @@ interface EmailAnalyzerProps {
   selectedEmail: EmailRecord | null;
   activeModel?: TrainedModelArtifact | null;
   modelVersion?: number;
+  onSendToTrainer?: (sample: TrainingSample) => void;
 }
 
-export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, activeModel, modelVersion = 0 }: EmailAnalyzerProps) {
+export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, activeModel, modelVersion = 0, onSendToTrainer }: EmailAnalyzerProps) {
   // Config state
   const [subject, setSubject] = useState('');
   const [sender, setSender] = useState('');
@@ -30,6 +31,8 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
   // Active metrics output state
   const [metrics, setMetrics] = useState<SpamMetrics | null>(null);
   const [modelPrediction, setModelPrediction] = useState<LocalPredictionResult | null>(null);
+  const [trainerFeedbackLabel, setTrainerFeedbackLabel] = useState<EmailLabel>('phishing');
+  const [trainerSentBanner, setTrainerSentBanner] = useState<string | null>(null);
 
   // Initialize form when a preset / selected email is updated from dashboard
   useEffect(() => {
@@ -207,8 +210,54 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
           className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-mono rounded-xl transition duration-200 flex items-center justify-center space-x-2 cursor-pointer shadow-xs"
         >
           <RefreshCw className="h-4 w-4" />
-          <span>RE-RUN CLASSIFIER ENGINE & EXTRACT METRICS</span>
+          <span>RE-RUN CLASSIFIER ENGINE &amp; EXTRACT METRICS</span>
         </button>
+
+        {onSendToTrainer && (
+          <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-slate-700">Feedback Label:</span>
+              <select
+                value={trainerFeedbackLabel}
+                onChange={e => setTrainerFeedbackLabel(e.target.value as EmailLabel)}
+                aria-label="Ground truth label for Trainer"
+                className="bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
+              >
+                <option value="legitimate">Legitimate</option>
+                <option value="spam">Spam</option>
+                <option value="phishing">Phishing</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (!subject.trim() && !body.trim()) return;
+                onSendToTrainer({
+                  id: `scan-fb-${Date.now()}`,
+                  subject: subject || '(No Subject)',
+                  body,
+                  sender: sender || 'unknown@sender.org',
+                  rawHeaders: headers,
+                  label: trainerFeedbackLabel,
+                  source: 'manual'
+                });
+                setTrainerSentBanner(`Sent "${subject.slice(0, 28) || 'Message'}..." (${trainerFeedbackLabel}) to Trainer.`);
+                setTimeout(() => setTrainerSentBanner(null), 3000);
+              }}
+              className="px-3.5 py-2 bg-slate-50 hover:bg-indigo-50 text-indigo-700 border border-slate-200 rounded-full text-xs font-medium transition flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <BrainCircuit className="w-3.5 h-3.5" />
+              <span>Send to Trainer Dataset</span>
+            </button>
+          </div>
+        )}
+
+        {trainerSentBanner && (
+          <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-700 text-xs flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{trainerSentBanner}</span>
+          </div>
+        )}
 
       </div>
 
