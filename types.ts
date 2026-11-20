@@ -122,6 +122,19 @@ export interface TokenWeightEntry {
   idf: number;
 }
 
+export interface EvaluatedTestCase {
+  id: string;
+  subject: string;
+  sender: string;
+  actualLabel: EmailLabel;
+  predictedLabel: EmailLabel;
+  spamScore: number;
+  confidence: number;
+  outcome: 'TP' | 'TN' | 'FP' | 'FN';
+  correct: boolean;
+  source: 'test_split' | 'vault_record' | 'baseline_suite';
+}
+
 export interface ModelEvaluationSummary {
   totalSamples: number;
   trainCount: number;
@@ -137,6 +150,8 @@ export interface ModelEvaluationSummary {
   fn: number;
   perClass: Record<EmailLabel, { precision: number; recall: number; f1: number; support: number }>;
   rocCurve: { fpr: number; tpr: number }[];
+  testCases?: EvaluatedTestCase[];
+  confusionMatrix3x3?: number[][];
 }
 
 export interface TrainedModelArtifact {

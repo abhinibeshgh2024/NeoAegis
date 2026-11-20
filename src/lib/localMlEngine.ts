@@ -9,7 +9,8 @@ import {
   EpochTelemetry,
   ModelEvaluationSummary,
   TrainedModelArtifact,
-  LocalPredictionResult
+  LocalPredictionResult,
+  EvaluatedTestCase
 } from '../../types';
 
 const CLASSES: EmailLabel[] = ['legitimate', 'spam', 'phishing'];
@@ -579,6 +580,7 @@ export async function trainLocalClassifier(
 
   // Compute full test-set confusion matrix & ROC AUC
   const evalVectors = testVecs.length > 0 ? testVecs : trainVecs;
+  const evalSourceSamples = testSamples.length > 0 ? testSamples : trainSamples;
   let tp = 0;
   let fp = 0;
   let tn = 0;
@@ -589,14 +591,23 @@ export async function trainLocalClassifier(
     { tp: 0, fp: 0, fn: 0, support: 0 },
     { tp: 0, fp: 0, fn: 0, support: 0 }
   ];
+  const confusionMatrix3x3: number[][] = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0]
+  ];
+  const testCases: EvaluatedTestCase[] = [];
 
   const threatScoresWithTruth: { score: number; isThreat: boolean }[] = [];
 
-  for (const vec of evalVectors) {
+  for (let i = 0; i < evalVectors.length; i++) {
+    const vec = evalVectors[i];
+    const src = evalSourceSamples[i];
     const probs = computeLogitsAndProbs(vec, weights, bias, engCount);
     const predIdx = probs[0] >= probs[1] && probs[0] >= probs[2] ? 0 : probs[1] >= probs[2] ? 1 : 2;
     const actualIdx = vec.labelIdx;
 
+    confusionMatrix3x3[actualIdx][predIdx]++;
     classMatrix[actualIdx].support++;
     if (predIdx === actualIdx) {
       classMatrix[actualIdx].tp++;
@@ -610,10 +621,35 @@ export async function trainLocalClassifier(
     const predThreat = predIdx !== 0 || threatProb >= 0.5;
     threatScoresWithTruth.push({ score: threatProb, isThreat: actualThreat });
 
-    if (predThreat && actualThreat) tp++;
-    else if (predThreat && !actualThreat) fp++;
-    else if (!predThreat && !actualThreat) tn++;
-    else fn++;
+    let outcome: 'TP' | 'TN' | 'FP' | 'FN';
+    if (predThreat && actualThreat) {
+      tp++;
+      outcome = 'TP';
+    } else if (predThreat && !actualThreat) {
+      fp++;
+      outcome = 'FP';
+    } else if (!predThreat && !actualThreat) {
+      tn++;
+      outcome = 'TN';
+    } else {
+      fn++;
+      outcome = 'FN';
+    }
+
+    if (src) {
+      testCases.push({
+        id: src.id || `tc-${i + 1}`,
+        subject: src.subject,
+        sender: src.sender,
+        actualLabel: CLASSES[actualIdx],
+        predictedLabel: CLASSES[predIdx],
+        spamScore: Math.min(99, Math.max(1, Math.round(threatProb * 100))),
+        confidence: Math.round(probs[predIdx] * 100),
+        outcome,
+        correct: predIdx === actualIdx,
+        source: 'test_split'
+      });
+    }
   }
 
   const perClass = {
@@ -709,7 +745,9 @@ export async function trainLocalClassifier(
       tn,
       fn,
       perClass,
-      rocCurve
+      rocCurve,
+      testCases,
+      confusionMatrix3x3
     },
     topTokensByClass
   };
