@@ -5,8 +5,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  LayoutDashboard, Mail, Image, FileSpreadsheet, Radio, Bot, Gauge,
-  ShieldAlert, ShieldCheck, Activity, Sparkles, Clock, AlertTriangle, 
+  LayoutDashboard, Mail, Image, FileSpreadsheet, Languages, Bot, Gauge,
+  ShieldCheck, Activity, Sparkles, Clock, AlertTriangle, 
   Settings, Shield, ChevronRight, CheckCircle2, XCircle, User, LogIn, UserPlus, LogOut, Lock, X,
   Menu, Info, Database, PlusCircle, Phone, Moon, Sun, Calendar
 } from 'lucide-react';
@@ -34,40 +34,17 @@ import Dashboard from './Dashboard';
 import EmailAnalyzer from './EmailAnalyzer';
 import ImageAnalyzer from './ImageAnalyzer';
 import BatchAnalyzer from './BatchAnalyzer';
-import AlertManager from './AlertManager';
+import TranslatorLab from './src/components/TranslatorLab';
 import ChatAssistant from './ChatAssistant';
 import PerformanceMetrics from './PerformanceMetrics';
 import ForensicsLab from './ForensicsLab';
 import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
+import InfoButton from './src/components/InfoButton';
 import { MOCK_EMAILS, analyzeEmail } from './spamEngine';
-import { EmailRecord, AlertNotification } from './types';
+import { EmailRecord } from './types';
 
-// Prepopulate standard active incoming alerts
-const INITIAL_ALERTS: AlertNotification[] = [
-  {
-    id: 'alert-init-1',
-    timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-    sender: 'accounts-verify-block@secure-banking-support.xyz',
-    subject: 'CRITICAL ALERT: Security suspend block on your payment accounts. Verify details immediately.',
-    type: 'credential_harvesting',
-    severity: 'critical',
-    resolved: false,
-    details: 'Impersonating generic financial support team. Body includes unaligned domains point directly to unverified phishing single-sign-on redirect servers.'
-  },
-  {
-    id: 'alert-init-2',
-    timestamp: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-    sender: 'chief-officer-hr@executive-staff-direct.com',
-    subject: 'URGENT: Desk assistant help needed. Purchase Steam and iTunes gift cards',
-    type: 'impersonation',
-    severity: 'high',
-    resolved: false,
-    details: 'Business Email Compromise (BEC) CEO forgery strategy. High administrative authority tags seeking bypass clearance metrics.'
-  }
-];
-
-type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'alerts' | 'rag' | 'metrics' | 'forensics' | 'profile' | 'about';
+type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'translator' | 'rag' | 'metrics' | 'forensics' | 'profile' | 'about';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<PortalTab>('dashboard');
@@ -119,10 +96,6 @@ export default function App() {
   const [savedDataCount, setSavedDataCount] = useState<number>(0);
   const [emailsParsedCount, setEmailsParsedCount] = useState<number>(0);
   const [workingSeconds, setWorkingSeconds] = useState<number>(0);
-
-  // Real-time alerts state
-  const [alerts, setAlerts] = useState<AlertNotification[]>(INITIAL_ALERTS);
-  const [flashingIntrusion, setFlashingIntrusion] = useState<AlertNotification | null>(null);
 
   // Load strict per-user isolated records & telemetry
   const syncUserIsolatedVault = async (uid: string) => {
@@ -285,20 +258,6 @@ export default function App() {
     setMobileMenuOpen(false);
   };
 
-  // Trigger alert from simulator
-  const handleTriggerGlobalAlert = (newAlert: AlertNotification) => {
-    setAlerts(prev => [newAlert, ...prev]);
-    setFlashingIntrusion(newAlert);
-  };
-
-  // Mark alerts resolved
-  const handleResolveAlert = (id: string) => {
-    setAlerts(prev => prev.map(al => al.id === id ? { ...al, resolved: true } : al));
-    if (flashingIntrusion?.id === id) {
-      setFlashingIntrusion(null);
-    }
-  };
-
   // Add dynamically parsed email from batch uploads and persist strictly to current user's profile
   const handleAddNewEmails = async (newRecords: EmailRecord[]) => {
     setEmails(prev => {
@@ -353,7 +312,7 @@ export default function App() {
     { id: 'email', label: 'Mail Body Scanner', icon: Mail },
     { id: 'image', label: 'Image OCR Inspector', icon: Image },
     { id: 'batch', label: 'Batch CSV Auditor', icon: FileSpreadsheet },
-    { id: 'alerts', label: 'Live Alerts', icon: Radio, badge: alerts.filter(a => !a.resolved).length },
+    { id: 'translator', label: 'Payload Translator', icon: Languages },
     { id: 'rag', label: 'SecOps RAG Assistant', icon: Bot },
     { id: 'metrics', label: 'Accuracy & F1 Matrix', icon: Gauge },
     { id: 'forensics', label: 'Forensics Lab', icon: Shield },
@@ -442,54 +401,69 @@ export default function App() {
               <div className="lg:col-span-7 space-y-6 text-left">
                 <div className="inline-flex items-center gap-2 px-3 py-1 bg-[#e8f0fe] text-[#1967d2] rounded-full text-xs font-medium">
                   <Lock className="w-3.5 h-3.5" />
-                  <span>Mandatory Analyst Authentication Gateway</span>
+                  <span>Analyst Authentication Gateway</span>
                 </div>
 
                 <div className="flex items-start gap-4">
                   <NeoAegisSymbol size="lg" />
                   <div>
-                    <h1 className="text-2xl sm:text-3xl font-medium text-[#202124] tracking-tight">
-                      NeoAegis Security Enclave
-                    </h1>
+                    <div className="flex items-center gap-2">
+                      <h1 className="text-2xl sm:text-3xl font-medium text-[#202124] tracking-tight">
+                        NeoAegis Security Enclave
+                      </h1>
+                      <InfoButton
+                        title="About NeoAegis Enclave"
+                        description="Sign in or create a personal analyst account to access the portal. Every user operates in an isolated UID-keyed vault so saved emails, threat scores, and session hours remain private."
+                        align="left"
+                      />
+                    </div>
                     <p className="text-sm text-[#1a73e8] font-medium mt-1">
                       Advanced Mail Assessment, Decision and Sandbox Apparatus
                     </p>
                   </div>
                 </div>
 
-                <p className="text-sm text-[#5f6368] leading-relaxed">
-                  Welcome to <strong className="text-[#202124] font-medium">NeoAegis</strong>. Please sign in or create your personal analyst account to unlock the main security portal. Every user operates inside an isolated cryptographic workspace—new users begin with a clean personal vault, and your saved emails, threat scores, working hours duration, and parsed email counters are strictly visible only to your profile.
-                </p>
-
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-2">
-                  <div className="bg-white border border-[#dadce0] rounded-2xl p-4 space-y-1.5">
-                    <div className="w-8 h-8 rounded-lg bg-[#e8f0fe] text-[#1a73e8] flex items-center justify-center">
-                      <Lock className="w-4 h-4" />
+                  <div className="bg-white border border-[#dadce0] rounded-2xl p-4 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-[#e8f0fe] text-[#1a73e8] flex items-center justify-center shrink-0">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <h3 className="text-xs font-medium text-[#202124] truncate">Strict Data Isolation</h3>
                     </div>
-                    <h3 className="text-xs font-medium text-[#202124]">Strict Data Isolation</h3>
-                    <p className="text-[11px] text-[#5f6368] leading-relaxed">
-                      Other users' emails and exports are never shown. Your data is keyed exclusively to your authenticated UID.
-                    </p>
+                    <InfoButton
+                      title="Strict Data Isolation"
+                      description="Other users' emails and exports are never shown. Your data is keyed exclusively to your authenticated UID."
+                      align="left"
+                    />
                   </div>
 
-                  <div className="bg-white border border-[#dadce0] rounded-2xl p-4 space-y-1.5">
-                    <div className="w-8 h-8 rounded-lg bg-[#e6f4ea] text-[#137333] flex items-center justify-center">
-                      <Clock className="w-4 h-4" />
+                  <div className="bg-white border border-[#dadce0] rounded-2xl p-4 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-[#e6f4ea] text-[#137333] flex items-center justify-center shrink-0">
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <h3 className="text-xs font-medium text-[#202124] truncate">Live Telemetry</h3>
                     </div>
-                    <h3 className="text-xs font-medium text-[#202124]">Live Telemetry</h3>
-                    <p className="text-[11px] text-[#5f6368] leading-relaxed">
-                      Automatically tracks your personal Saved Data, Working Hours Duration, and Emails Parsed.
-                    </p>
+                    <InfoButton
+                      title="Live Telemetry"
+                      description="Automatically tracks your personal Saved Data, Working Hours Duration, and Emails Parsed."
+                      align="left"
+                    />
                   </div>
 
-                  <div className="bg-white border border-[#dadce0] rounded-2xl p-4 space-y-1.5">
-                    <div className="w-8 h-8 rounded-lg bg-[#fef7e0] text-[#b06000] flex items-center justify-center">
-                      <Shield className="w-4 h-4" />
+                  <div className="bg-white border border-[#dadce0] rounded-2xl p-4 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-[#fef7e0] text-[#b06000] flex items-center justify-center shrink-0">
+                        <Shield className="w-4 h-4" />
+                      </div>
+                      <h3 className="text-xs font-medium text-[#202124] truncate">34-Vector Sandbox</h3>
                     </div>
-                    <h3 className="text-xs font-medium text-[#202124]">34-Vector Sandbox</h3>
-                    <p className="text-[11px] text-[#5f6368] leading-relaxed">
-                      Client-side email forensics, OCR inspection, local translation, and 8-D semantic clustering.
-                    </p>
+                    <InfoButton
+                      title="34-Vector Sandbox"
+                      description="Client-side email forensics, OCR inspection, multi-lingual payload translator, and 8-D semantic clustering."
+                      align="right"
+                    />
                   </div>
                 </div>
               </div>
@@ -531,14 +505,9 @@ export default function App() {
 
                 <div className="flex items-center gap-3 mb-5">
                   <NeoAegisSymbol size="sm" />
-                  <div>
-                    <h2 className="text-lg font-medium text-[#202124]">
-                      {authMode === 'signup' ? 'Create your NeoAegis Account' : 'Sign in to NeoAegis'}
-                    </h2>
-                    <p className="text-xs text-[#5f6368]">
-                      Enter your credentials to open your personal security portal
-                    </p>
-                  </div>
+                  <h2 className="text-lg font-medium text-[#202124]">
+                    {authMode === 'signup' ? 'Create your NeoAegis Account' : 'Sign in to NeoAegis'}
+                  </h2>
                 </div>
 
                 {headerAuthError && (
@@ -882,39 +851,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Dynamic alert flasher overlay banner */}
-      {flashingIntrusion && (
-        <div className="bg-[#fce8e6] border-b border-[#fad2cf] px-6 py-3 sticky top-0 z-40 animate-fade-in flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
-          <div className="flex items-start sm:items-center space-x-3.5">
-            <div className="p-2 bg-white text-[#d93025] rounded-full shadow-2xs">
-              <ShieldAlert className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="text-[11px] font-medium text-[#c5221f] uppercase tracking-wider block">Critical Security Alert</span>
-              <p className="text-sm font-medium text-[#202124] mt-0.5">{flashingIntrusion.subject}</p>
-              <p className="text-xs text-[#5f6368] mt-0.5">Origin sender: <span className="font-mono">{flashingIntrusion.sender}</span></p>
-            </div>
-          </div>
-          <div className="flex items-center space-x-2 w-full sm:w-auto justify-end">
-            <button 
-              onClick={() => {
-                setCurrentTab('alerts');
-                setFlashingIntrusion(null);
-              }}
-              className="px-4 py-1.5 bg-[#d93025] hover:bg-[#b31412] text-white font-medium text-xs rounded-full transition shadow-2xs cursor-pointer"
-            >
-              Investigate Threat
-            </button>
-            <button 
-              onClick={() => setFlashingIntrusion(null)}
-              className="px-3 py-1.5 text-[#5f6368] hover:bg-black/5 rounded-full transition text-xs font-medium cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Google Sites / Workspace Sticky Top Header */}
       <header className="sticky top-0 z-40 bg-white border-b border-[#dadce0]" id="main-header">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
@@ -1114,12 +1050,8 @@ export default function App() {
               />
             )}
 
-            {currentTab === 'alerts' && (
-              <AlertManager 
-                alerts={alerts} 
-                onTriggerGlobalAlert={handleTriggerGlobalAlert} 
-                onResolveAlert={handleResolveAlert} 
-              />
+            {currentTab === 'translator' && (
+              <TranslatorLab selectedEmail={selectedEmail} />
             )}
 
             {currentTab === 'rag' && (
@@ -1165,16 +1097,18 @@ export default function App() {
           {/* Right quick list bar: Personal Isolated Inbound Audit Stream */}
           <aside className="lg:col-span-4 bg-white border border-[#dadce0] p-5 rounded-2xl max-h-[720px] overflow-y-auto space-y-4">
             
-            <div className="border-b border-[#f1f3f4] pb-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-medium text-[#202124]">Personal Audit Stream</h2>
-                <span className="px-2 py-0.5 bg-[#e8f0fe] text-[#1967d2] rounded-full text-[11px] font-medium">
-                  {emails.length} messages
-                </span>
+            <div className="border-b border-[#f1f3f4] pb-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <h2 className="text-sm font-medium text-[#202124] truncate">Personal Audit Stream</h2>
+                <InfoButton
+                  title="Personal Audit Stream"
+                  description={`Isolated to ${currentUser?.email || 'your account'}. Other users' records and telemetry are never displayed.`}
+                  align="left"
+                />
               </div>
-              <p className="text-xs text-[#5f6368] mt-1">
-                Isolated to <span className="font-medium text-[#202124]">{currentUser?.email}</span>. Data from other users is never shown.
-              </p>
+              <span className="px-2 py-0.5 bg-[#e8f0fe] text-[#1967d2] rounded-full text-[11px] font-medium shrink-0">
+                {emails.length} messages
+              </span>
             </div>
 
             {emails.length === 0 ? (

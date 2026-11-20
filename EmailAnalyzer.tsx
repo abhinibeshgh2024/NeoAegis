@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { analyzeEmail, MOCK_EMAILS } from './spamEngine';
 import { EmailRecord, SpamMetrics } from './types';
+import InfoButton from './src/components/InfoButton';
 
 interface EmailAnalyzerProps {
   onAnalyzeFinished: (record: EmailRecord) => void;
@@ -90,14 +91,14 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
       {/* Left Input Panel: Standard Composer & Raw Header Editors */}
       <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-6 lg:col-span-6 space-y-4 shadow-3xs">
         <div className="flex items-center justify-between pb-3 border-b border-slate-200">
-          <div>
-            <h3 className="text-base font-display font-semibold text-slate-900 flex items-center space-x-2">
-              <Mail className="text-indigo-600 h-5 w-5" />
-              <span>Inbound headers & body parser</span>
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">
-              Simulate or modify standard header variables to evaluate security scores.
-            </p>
+          <div className="flex items-center space-x-2">
+            <Mail className="text-indigo-600 h-5 w-5" />
+            <h3 className="text-base font-display font-semibold text-slate-900">Inbound Headers & Body Parser</h3>
+            <InfoButton
+              title="Inbound Headers & Body Parser"
+              description="Simulate, edit, or load sample emails and header variables (From, To, Subject, Body, SPF/DKIM) to compute 34-point security scores."
+              align="left"
+            />
           </div>
         </div>
 
@@ -170,8 +171,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
 
           <div>
             <div className="flex justify-between items-center mb-1">
-              <label className="block text-[11px] font-mono text-slate-500">RAW SECURITY ENVELOPE HEADERS (DKIM/SPF/RECEPTS)</label>
-              <span className="text-[10px] text-indigo-600 font-mono">Modifies score output</span>
+              <label className="block text-[11px] font-mono text-slate-500">RAW SECURITY ENVELOPE HEADERS (DKIM/SPF/RECEIVED)</label>
             </div>
             <textarea 
               rows={4}
@@ -204,14 +204,19 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
             <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center space-x-2">
                 <ShieldAlert className={`h-5 w-5 ${metrics.spamScore > 50 ? 'text-red-600' : 'text-emerald-600'}`} />
-                <span className="text-sm font-mono font-bold text-slate-900">REAL-TIME SANDBOX THREAT DIAGRAM</span>
+                <span className="text-sm font-medium text-slate-900">Sandbox Threat Assessment</span>
+                <InfoButton
+                  title="Sandbox Threat Assessment"
+                  description="Evaluates spam probability, phishing severity, triggered heuristic rules, and sender reputation grade in real time."
+                  align="left"
+                />
               </div>
-              <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold ${
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${
                 metrics.spamScore > 75 ? 'bg-red-50 text-red-600 border border-red-200' :
                 metrics.spamScore > 40 ? 'bg-amber-50 text-amber-700 border border-amber-200' :
                 'bg-emerald-50 text-emerald-600 border border-emerald-200'
               }`}>
-                {metrics.spamScore > 50 ? 'SPAM / ATTACK DETECTED' : 'SAFE / CLEAN ENVELOPE'}
+                {metrics.spamScore > 50 ? 'Threat Detected' : 'Clean Envelope'}
               </span>
             </div>
 
@@ -257,7 +262,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
                 {metrics.urgencyCoefficient > 30 && (
                   <div className="flex items-center space-x-2 bg-red-50 text-red-700 p-2.5 rounded-lg border border-red-200">
                     <AlertCircle className="h-4 w-4 shrink-0" />
-                    <span>System Pressure Pressure ({metrics.urgencyCoefficient}%)</span>
+                    <span>Urgency Pressure ({metrics.urgencyCoefficient}%)</span>
                   </div>
                 )}
 
@@ -315,37 +320,35 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail }: Emai
 
             {/* Recommended Action Center */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-2 shadow-3xs">
-              <span className="text-[10px] font-mono text-slate-400 uppercase block">RECOMMENDED DEFENSIVE PROTOCOL</span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-800">Recommended Defensive Protocol</span>
+                <InfoButton
+                  title="Recommended Defensive Protocol"
+                  description={
+                    metrics.spamScore > 75
+                      ? 'High-risk social engineering patterns with domain mismatches or financial triggers detected. Quarantine immediately and block sending IP.'
+                      : metrics.spamScore > 40
+                      ? 'Suspicious indicators or non-aligned envelope headers detected. Verify sender out-of-band before clicking links.'
+                      : 'Envelope structure is authenticated with high defense confidence and zero hidden bypass indicators.'
+                  }
+                  align="right"
+                />
+              </div>
               {metrics.spamScore > 75 ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-red-700 font-sans leading-relaxed">
-                    This email exhibits characteristic patterns of a sophisticated social engineering phishing attack. It incorporates structural domain mismatches alongside deceptive financial trigger components.
-                  </p>
-                  <ul className="text-[11px] font-mono text-slate-500 list-disc list-inside space-y-1">
-                    <li>Strictly quarantine the message immediately</li>
-                    <li>Do not execute or open any associated invoice files (Risk rating: {metrics.attachmentRiskIndex}%)</li>
-                    <li>Route sending IP ({metrics.ipBlacklistMatches > 0 ? 'Blacklisted' : 'Unverified'}) to enterprise block lists</li>
-                  </ul>
-                </div>
+                <ul className="text-[11px] font-mono text-slate-600 list-disc list-inside space-y-1">
+                  <li>Quarantine message immediately</li>
+                  <li>Block attachment execution (Risk: {metrics.attachmentRiskIndex}%)</li>
+                  <li>Add IP ({metrics.ipBlacklistMatches > 0 ? 'Blacklisted' : 'Unverified'}) to blocklist</li>
+                </ul>
               ) : metrics.spamScore > 40 ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-amber-800 font-sans leading-relaxed">
-                    Suspicious indicators found. This might represent mass marketing spam or standard external correspondence utilizing non-aligned domain envelopes.
-                  </p>
-                  <ul className="text-[11px] font-mono text-slate-500 list-disc list-inside space-y-1">
-                    <li>Inspect hyper-target links before cursor execution</li>
-                    <li>Verify sender authenticity using offline secure phone channels</li>
-                  </ul>
-                </div>
+                <ul className="text-[11px] font-mono text-slate-600 list-disc list-inside space-y-1">
+                  <li>Inspect target URLs before opening</li>
+                  <li>Verify sender identity out-of-band</li>
+                </ul>
               ) : (
-                <div className="space-y-2">
-                  <p className="text-xs text-emerald-700 font-sans leading-relaxed">
-                    The envelope structure is validly signed and authenticated. No anomalous urgencies, authorities mimic, or zero-font bypass mechanisms were indexed.
-                  </p>
-                  <p className="text-[11px] font-mono text-slate-500">
-                    Confidence: High (Overall sandbox resilience score: {metrics.defenseRating}%)
-                  </p>
-                </div>
+                <p className="text-xs text-emerald-700 font-medium">
+                  Low Risk &bull; Defense Confidence: {metrics.defenseRating}%
+                </p>
               )}
             </div>
 

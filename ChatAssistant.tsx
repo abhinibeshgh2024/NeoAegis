@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { queryKnowledgeBase, generateLocalRAGResponse, RAGMatchResult, KNOWLEDGE_BASE } from './ragKnowledge';
 import { ChatMessage } from './types';
+import InfoButton from './src/components/InfoButton';
 
 interface ChatAssistantProps {
   onSearchQuery?: (q: string) => void;
@@ -20,7 +21,7 @@ export default function ChatAssistant({ onSearchQuery }: ChatAssistantProps) {
     {
       id: 'msg-init',
       sender: 'assistant',
-      text: "### 👋 Greetings, SecOps Specialist\nI am your offline digital **RAG Assistant**. I can execute keyword vector lookups across our localized Threat Intelligence Library to help you neutralize compliance vectors, authenticate deliverability headers, and inspect image obfuscation structures.\n\nTry clicking any of the **Heuristic Prompt Bubbles** or ask a custom question below to test the retrieval stack!",
+      text: "Hello! Ask a security question or pick a quick prompt below to query the local Threat Intelligence knowledge base.",
       timestamp: new Date().toISOString()
     }
   ]);
@@ -92,12 +93,13 @@ export default function ChatAssistant({ onSearchQuery }: ChatAssistantProps) {
             <div className="w-8 h-8 rounded-full bg-[#e8f0fe] flex items-center justify-center">
               <Bot className="h-4 w-4 text-[#1a73e8]" />
             </div>
-            <div>
-              <h3 className="text-sm font-medium text-[#202124] flex items-center space-x-1.5">
-                <span>SecOps Threat RAG Assistant</span>
-                <span className="inline-block w-2 h-2 rounded-full bg-[#1e8e3e]"></span>
-              </h3>
-              <p className="text-[11px] text-[#5f6368]">100% Client-Side Vector Knowledge Retrieval</p>
+            <div className="flex items-center space-x-2">
+              <h3 className="text-sm font-medium text-[#202124]">SecOps Threat RAG Assistant</h3>
+              <InfoButton
+                title="SecOps Threat RAG Assistant"
+                description="100% client-side vector knowledge retrieval. Searches local threat intelligence chunks using TF-IDF and cosine similarity without external API egress."
+                align="left"
+              />
             </div>
           </div>
 
@@ -215,47 +217,47 @@ export default function ChatAssistant({ onSearchQuery }: ChatAssistantProps) {
       <div className="space-y-6 lg:col-span-5">
         
         <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-5 space-y-4">
-          <div className="flex items-center space-x-2 border-b border-[#dadce0] pb-3">
-            <BookOpen className="text-[#1a73e8] h-5 w-5" />
-            <h3 className="text-sm font-medium text-[#202124]">Local Knowledge Base Directory</h3>
+          <div className="flex items-center justify-between border-b border-[#dadce0] pb-3">
+            <div className="flex items-center space-x-2">
+              <BookOpen className="text-[#1a73e8] h-5 w-5" />
+              <h3 className="text-sm font-medium text-[#202124]">Knowledge Base Directory</h3>
+            </div>
+            <InfoButton
+              title="Knowledge Base Directory"
+              description="Caches pre-compiled security intelligence chunks queried locally during vector cosine similarity matching to prevent cloud data egress."
+              align="right"
+            />
           </div>
 
-          <p className="text-xs text-[#5f6368] leading-relaxed">
-            This directory caches pre-compiled security intelligence chunks mapped during query vector scans. TF-IDF intersections find matches locally to prevent cloud data egress.
-          </p>
-
-          <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+          <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
             {KNOWLEDGE_BASE.map(doc => {
               const matched = lastRAGMatches.find(m => m.doc.id === doc.id);
               
               return (
                 <div 
                   key={doc.id} 
-                  className={`p-3.5 rounded-xl border text-left transition ${
+                  className={`p-3 rounded-xl border text-left transition ${
                     matched 
                       ? 'border-[#1a73e8] bg-[#e8f0fe]/50' 
                       : 'border-[#dadce0] bg-white'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] font-mono font-medium text-[#5f6368]">{doc.id}</span>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                      matched ? 'bg-[#e8f0fe] text-[#1967d2]' : 'bg-[#f1f3f4] text-[#5f6368]'
-                    }`}>
-                      {matched ? `Match: ${matched.relevance}%` : doc.category.replace('_', ' ')}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                        matched ? 'bg-[#e8f0fe] text-[#1967d2]' : 'bg-[#f1f3f4] text-[#5f6368]'
+                      }`}>
+                        {matched ? `Match: ${matched.relevance}%` : doc.category.replace('_', ' ')}
+                      </span>
+                      <InfoButton title={doc.title} description={doc.summary} align="right" />
+                    </div>
                   </div>
 
                   <h4 className="text-xs font-medium text-[#202124] mt-1.5">{doc.title}</h4>
-                  <p className="text-[11px] text-[#5f6368] mt-1 leading-snug">{doc.summary}</p>
                 </div>
               );
             })}
-          </div>
-
-          <div className="bg-white p-3 rounded-xl border border-[#dadce0] flex items-center space-x-2 text-xs text-[#5f6368]">
-            <Info className="h-4 w-4 text-[#1a73e8] shrink-0" />
-            <span>Search algorithm computes normalized vector cosine similarity locally.</span>
           </div>
         </div>
 

@@ -9,6 +9,7 @@ import {
   Sliders, Info, Compass, HelpCircle, CheckCircle, RefreshCw
 } from 'lucide-react';
 import { ImageAnalysisResult, SpamMetrics } from './types';
+import InfoButton from './src/components/InfoButton';
 
 // Preset mock image items so users can test immediately!
 interface ImagePreset {
@@ -201,14 +202,16 @@ export default function ImageAnalyzer() {
       {/* Left panel: Image drag and drop OR Preset loader */}
       <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-6 lg:col-span-5 space-y-5 flex flex-col justify-between shadow-3xs">
         <div className="space-y-4">
-          <div>
-            <h3 className="text-base font-display font-semibold text-slate-900 flex items-center space-x-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center space-x-2">
               <Image className="text-indigo-600 h-5 w-5" />
-              <span>SPAM IMAGE TELEMETRY EXPOSER</span>
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">
-              Test how modern flyers, coupons, and scanned invoice JPGs are parsed to subvert textual keyword firewalls.
-            </p>
+              <h3 className="text-base font-medium text-slate-900">Image OCR &amp; Telemetry Inspector</h3>
+            </div>
+            <InfoButton
+              title="Image OCR & Telemetry Inspector"
+              description="Inspects flyers, coupons, and scanned invoice images for embedded OCR text lures, color saturation spikes, metadata stripping, and QR code phishing."
+              align="right"
+            />
           </div>
 
           {/* Quick interactive items */}
@@ -260,8 +263,8 @@ export default function ImageAnalyzer() {
                   </div>
 
                   <div className="space-y-1">
-                    <span className="text-[10px] font-mono text-indigo-300 block tracking-widest uppercase">
-                      // RASTER INSPECTOR ENGINE
+                    <span className="text-[10px] font-mono text-indigo-300 block tracking-wider uppercase">
+                      Raster Inspector
                     </span>
                     <span className="text-xs font-sans font-medium text-white block truncate">
                       {activePreset.title}
@@ -313,9 +316,11 @@ export default function ImageAnalyzer() {
 
           {/* OCR text capture block */}
           <div className="space-y-2">
-            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">EXTRACTED TEXT STRINGS (AUTOMATED OCR)</span>
-            <div className="bg-white border border-slate-200 p-4 rounded-xl font-mono text-xs text-slate-700 leading-relaxed border-l-2 border-l-indigo-500 relative shadow-3xs">
-              <span className="absolute bottom-2 right-2 text-[9px] text-slate-400">CONFIDENCE: PASS 94%</span>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-slate-500">Extracted OCR Text</span>
+              <span className="text-[10px] font-mono text-slate-400">Confidence: 94%</span>
+            </div>
+            <div className="bg-white border border-slate-200 p-4 rounded-xl font-mono text-xs text-slate-700 leading-relaxed shadow-3xs">
               &ldquo;{activePreset.ocrDetectedText}&rdquo;
             </div>
           </div>
@@ -359,44 +364,39 @@ export default function ImageAnalyzer() {
 
           {/* Raster Diagnostic Indices */}
           <div className="space-y-3 pt-2">
-            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">ANOMALY WEIGHT ASSIGNMENTS</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-700">Anomaly Weight Assignments</span>
+              <InfoButton
+                title="Anomaly Weight Assignments"
+                description="Quantifies extreme color warning saturation, OCR text bounding density, stripped EXIF metadata age, and phishing lure keyword alignment."
+                align="left"
+              />
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               
               <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
-                <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-800 block">Saturated Color Warnings</span>
-                  <span className="text-[10px] font-mono text-slate-400">Presence of extreme layout color prompts</span>
-                </div>
+                <span className="text-xs font-medium text-slate-800">Saturated Color Warnings</span>
                 <span className={`text-sm font-mono font-bold ${activePreset.detectedMetrics.colorSpikeDanger > 60 ? 'text-red-600' : 'text-slate-500'}`}>
                   {activePreset.detectedMetrics.colorSpikeDanger}%
                 </span>
               </div>
 
               <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
-                <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-800 block">OCR Text Area Density</span>
-                  <span className="text-[10px] font-mono text-slate-400">Ratio of lettering overlay bounding boxes</span>
-                </div>
+                <span className="text-xs font-medium text-slate-800">OCR Text Area Density</span>
                 <span className="text-sm font-mono text-slate-700 font-bold">
                   {activePreset.detectedMetrics.textDensity}%
                 </span>
               </div>
 
               <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
-                <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-800 block">Metadata Age Obfuscation</span>
-                  <span className="text-[10px] font-mono text-slate-400">Exposes lack of camera / software model stamps</span>
-                </div>
+                <span className="text-xs font-medium text-slate-800">Metadata Age Obfuscation</span>
                 <span className="text-sm font-mono text-amber-700 font-bold">
                   {activePreset.detectedMetrics.obfuscationScore}%
                 </span>
               </div>
 
               <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-3xs">
-                <div className="space-y-0.5">
-                  <span className="text-xs font-sans text-slate-800 block">Lure Match Vector Index</span>
-                  <span className="text-[10px] font-mono text-slate-400">Confidence matching bait template words</span>
-                </div>
+                <span className="text-xs font-medium text-slate-800">Lure Match Vector Index</span>
                 <span className={`text-sm font-mono font-bold ${activePreset.detectedMetrics.phishingLureMatch > 60 ? 'text-red-600' : 'text-emerald-600'}`}>
                   {activePreset.detectedMetrics.phishingLureMatch}%
                 </span>
@@ -407,14 +407,16 @@ export default function ImageAnalyzer() {
 
           {/* QR Code Warning Callout */}
           {activePreset.qrCodeDetected && (
-            <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-start space-x-3 text-xs text-red-800 shadow-3xs animate-fade-in">
-              <ShieldAlert className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold font-sans block text-sm text-red-700">QR Code Phishing (Quishing) Vector Detected</span>
-                <p className="mt-1 leading-relaxed text-red-700">
-                  This image contains a highly contrastive 2D matrix barcode (QR Code). Attackers leverage QR codes within flyers to redirect sandbox recipients directly off secure mail clients, guiding victims onto fraudulent financial validation forms hosted outside standard email security proxies.
-                </p>
+            <div className="bg-red-50 border border-red-200 p-3.5 rounded-xl flex items-center justify-between gap-3 text-xs text-red-800 shadow-3xs animate-fade-in">
+              <div className="flex items-center space-x-2.5">
+                <ShieldAlert className="h-4 w-4 text-red-600 shrink-0" />
+                <span className="font-medium text-red-700">QR Code Phishing (Quishing) Vector Detected</span>
               </div>
+              <InfoButton
+                title="Quishing Threat Vector"
+                description="This image contains a 2D QR barcode. Attackers embed QR codes in flyers to redirect victims off secure mail proxies onto fraudulent login or payment forms."
+                align="right"
+              />
             </div>
           )}
 

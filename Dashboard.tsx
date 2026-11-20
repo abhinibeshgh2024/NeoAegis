@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { EmailRecord, SpamMetrics } from './types';
 import { logExportToEnclaveProfile } from './src/lib/firebase';
+import InfoButton from './src/components/InfoButton';
 
 interface DashboardProps {
   records: EmailRecord[];
@@ -271,11 +272,13 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
 
       {/* Exporting & Reporting Action Panel */}
       <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-5 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div>
+        <div className="flex items-center gap-2">
           <h3 className="text-base font-medium text-[#202124]">Security Forensic Reporting & Personal Vault</h3>
-          <p className="text-xs text-[#5f6368] mt-0.5">
-            All parsed emails, scores, and exported files are isolated to your personal analyst profile.
-          </p>
+          <InfoButton
+            title="Forensic Reporting & Personal Vault"
+            description="All parsed emails, threat scores, and exported Markdown/CSV reports are isolated strictly to your personal analyst profile."
+            align="left"
+          />
         </div>
         <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
           {records.length === 0 && onSeedStarterSample && (
@@ -379,12 +382,14 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
         <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-6 lg:col-span-7 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-sm font-medium text-[#202124] flex items-center space-x-2">
-                  <BarChart4 className="w-4 h-4 text-[#1a73e8]" />
-                  <span>Inbound Mail Metrics Distribution</span>
-                </h3>
-                <p className="text-xs text-[#5f6368] mt-0.5">Cross-analyzing critical indices across current sandbox elements</p>
+              <div className="flex items-center space-x-2">
+                <BarChart4 className="w-4 h-4 text-[#1a73e8]" />
+                <h3 className="text-sm font-medium text-[#202124]">Inbound Mail Metrics Distribution</h3>
+                <InfoButton
+                  title="Inbound Mail Metrics Distribution"
+                  description="Cross-analyzes Spam Score and Phishing Likelihood trends across the emails in your personal vault."
+                  align="left"
+                />
               </div>
               <span className="px-2.5 py-0.5 text-[11px] font-medium text-[#1967d2] rounded-full bg-[#e8f0fe]">
                 Dynamic Graph
@@ -430,12 +435,14 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
         <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-6 lg:col-span-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-sm font-medium text-[#202124] flex items-center space-x-2">
-                  <Compass className="w-4 h-4 text-[#1a73e8]" />
-                  <span>Threat Lure Vector Profiling</span>
-                </h3>
-                <p className="text-xs text-[#5f6368] mt-0.5">Multi-dimensional vector parsing of the active target email</p>
+              <div className="flex items-center space-x-2">
+                <Compass className="w-4 h-4 text-[#1a73e8]" />
+                <h3 className="text-sm font-medium text-[#202124]">Threat Lure Vector Profiling</h3>
+                <InfoButton
+                  title="Threat Lure Vector Profiling"
+                  description="Multi-dimensional radar breakdown of the currently selected email across financial lure, urgency, authority mimicry, density, links, and vector similarity."
+                  align="right"
+                />
               </div>
               <span className="px-2.5 py-0.5 text-[11px] font-medium text-[#1967d2] rounded-full bg-[#e8f0fe]">
                 Vector Radar
@@ -466,14 +473,14 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
       {/* 3. The 30+ Metrics Directory & Analyzer Inventory */}
       <div className="bg-white border border-[#dadce0] rounded-2xl p-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-5 border-b border-[#dadce0]">
-          <div>
-            <h3 className="text-base font-medium text-[#202124] flex items-center space-x-2">
-              <Terminal className="text-[#1a73e8] h-5 w-5" />
-              <span>Diagnostic Telemetry Directory (34 Dynamic Metrics Evaluated)</span>
-            </h3>
-            <p className="text-xs text-[#5f6368] mt-1">
-              Select an email in the right panel to inspect live localized heuristic and algorithmic values.
-            </p>
+          <div className="flex items-center space-x-2">
+            <Terminal className="text-[#1a73e8] h-5 w-5" />
+            <h3 className="text-base font-medium text-[#202124]">Diagnostic Telemetry Directory (34 Metrics)</h3>
+            <InfoButton
+              title="Diagnostic Telemetry Directory"
+              description="Select any email in the right audit stream to inspect all 34 heuristic and technical alignment values. Click the info icon on any metric card for its definition."
+              align="left"
+            />
           </div>
           
           <div className="flex flex-wrap items-center gap-1 mt-4 md:mt-0 bg-[#f1f3f4] p-1 rounded-full">
@@ -508,11 +515,11 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
                 className="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] hover:border-[#1a73e8] transition-all duration-200 flex flex-col justify-between group"
                 id={`metric-item-${met.key}`}
               >
-                <div>
-                  <div className="flex items-start justify-between">
-                    <span className="text-[11px] font-mono text-[#5f6368] group-hover:text-[#1a73e8] transition-colors">
-                      M-{index+1 < 10 ? '0'+(index+1) : index+1}
-                    </span>
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-[11px] font-mono text-[#5f6368] group-hover:text-[#1a73e8] transition-colors">
+                    M-{index+1 < 10 ? '0'+(index+1) : index+1}
+                  </span>
+                  <div className="flex items-center gap-1.5">
                     <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
                       isDanger ? 'bg-[#fce8e6] text-[#c5221f]' :
                       isSuccess ? 'bg-[#e6f4ea] text-[#137333]' :
@@ -521,17 +528,10 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
                     }`}>
                       {met.value}
                     </span>
+                    <InfoButton title={met.label} description={met.desc} align="right" />
                   </div>
-                  <h4 className="text-xs font-medium text-[#202124] mt-2">{met.label}</h4>
-                  <p className="text-[11px] text-[#5f6368] mt-1 leading-relaxed">{met.desc}</p>
                 </div>
-                <div className="mt-3 pt-2.5 border-t border-[#dadce0]/60 flex items-center justify-between text-[10px] text-[#5f6368]">
-                  <span>Local Sandbox</span>
-                  <span className="opacity-0 group-hover:opacity-100 text-[#1a73e8] transition-opacity flex items-center space-x-0.5 font-medium">
-                    <Info className="w-3 h-3" />
-                    <span>Heuristic</span>
-                  </span>
-                </div>
+                <h4 className="text-xs font-medium text-[#202124] mt-3">{met.label}</h4>
               </div>
             );
           })}

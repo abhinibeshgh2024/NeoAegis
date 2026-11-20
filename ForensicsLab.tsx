@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { EmailRecord, SpamMetrics } from './types';
 import { analyzeEmail } from './spamEngine';
+import InfoButton from './src/components/InfoButton';
 
 interface ForensicsLabProps {
   selectedEmail: EmailRecord | null;
@@ -377,6 +378,7 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
   const [ruleTarget, setRuleTarget] = useState<'subject' | 'body' | 'headers'>('body');
   const [ruleWeight, setRuleWeight] = useState(15);
   const [ruleDesc, setRuleDesc] = useState('');
+  const [ruleError, setRuleError] = useState('');
   const [testResult, setTestResult] = useState<{ matches: boolean; matchCount: number; matchedStrings: string[] }>({
     matches: false,
     matchCount: 0,
@@ -385,13 +387,14 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
 
   const handleCreateRule = (e: React.FormEvent) => {
     e.preventDefault();
+    setRuleError('');
     if (!ruleName || !ruleRegex) return;
 
     // Validate regex before adding
     try {
       new RegExp(ruleRegex, 'i');
     } catch (err) {
-      alert('Invalid Regular Expression syntax. Please verify.');
+      setRuleError('Invalid regular expression syntax. Please check your pattern.');
       return;
     }
 
@@ -685,18 +688,18 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
     <div className="space-y-6 animate-fade-in" id="forensics-lab-root">
       
       {/* Visual Workspace Hero Banner */}
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-3xs">
-        <div>
-          <div className="flex items-center space-x-2">
-            <Shield className="w-5 h-5 text-indigo-600 animate-pulse" />
-            <h2 className="text-base font-serif italic text-slate-900 font-bold">NeoAegis Advanced Forensics Workbench</h2>
-            <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-100 text-[9px] font-mono font-bold text-indigo-600 rounded">
-              OFFLINE SUITE
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Zero-knowledge diagnostic utilities, localized rulesets, cryptographic checks, and Shadow DOM sanitizers for deep forensic analysis.
-          </p>
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-3xs">
+        <div className="flex items-center space-x-2.5">
+          <Shield className="w-5 h-5 text-indigo-600" />
+          <h2 className="text-base font-medium text-slate-900">Advanced Forensics Workbench</h2>
+          <InfoButton
+            title="Advanced Forensics Workbench"
+            description="Includes an isolated Shadow DOM HTML sanitizer, OpenPGP signature validator, custom regex rule builder, zero-knowledge k-Anonymity leak scanner, and mail hop tracer."
+            align="left"
+          />
+          <span className="px-2.5 py-0.5 bg-indigo-50 text-[11px] font-medium text-indigo-600 rounded-full">
+            Offline Suite
+          </span>
         </div>
         {selectedEmail && (
           <div className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl flex items-center space-x-2.5 shadow-3xs">
@@ -782,13 +785,16 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
             {/* Left Sandbox Control & Editor Panel */}
             <div className="lg:col-span-5 space-y-4">
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Interactive Parameters</span>
-                <h4 className="text-xs font-bold text-slate-850">Shadow DOM Sanitizer Engine</h4>
-                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-                  Renders raw email layout inside a fully locked environment. Script scopes are terminated to prevent session extraction and credential fishing leaks.
-                </p>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-medium text-slate-900">Shadow DOM Sanitizer</h4>
+                  <InfoButton
+                    title="Shadow DOM Sanitizer"
+                    description="Renders raw email HTML inside a locked sandbox iframe with scripts, event handlers, and tracking pixels disabled."
+                    align="right"
+                  />
+                </div>
 
-                <div className="mt-4 space-y-3">
+                <div className="mt-3 space-y-3">
                   <div className="flex items-center justify-between p-2.5 bg-white border border-slate-200 rounded-lg shadow-3xs">
                     <span className="text-xs font-mono text-slate-600">Highlight Hidden Text Stuffing</span>
                     <button 
@@ -842,11 +848,18 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
             {/* Right Secure IFrame / Shadow DOM Canvas */}
             <div className="lg:col-span-7 space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Isolated Visual Sandbox Canvas</span>
-                <span className="text-xs text-emerald-600 font-mono flex items-center">
-                  <ShieldCheck className="w-4 h-4 mr-1 animate-pulse" />
-                  <span>Locked Shadow Iframe</span>
-                </span>
+                <span className="text-xs font-medium text-slate-700">Isolated Visual Sandbox Canvas</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-emerald-600 font-medium flex items-center">
+                    <ShieldCheck className="w-4 h-4 mr-1" />
+                    <span>Locked Shadow Iframe</span>
+                  </span>
+                  <InfoButton
+                    title="Sandbox Isolation Shield"
+                    description="External links, JavaScript execution, cookies, storage requests, and remote asset hooks are deactivated inside this iframe."
+                    align="right"
+                  />
+                </div>
               </div>
 
               {/* Sandboxed visual iframe container */}
@@ -881,13 +894,6 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
                     `}
                     className="w-full h-full border-none"
                   />
-                </div>
-              </div>
-
-              <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex items-start space-x-2.5 text-left text-xs text-red-800">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
-                <div>
-                  <span className="font-bold">Aegis Sandbox Isolation Shield Active:</span> External link operations, dynamic javascript injection attempts, cookie stores, storage requests, and asset hooks have been strictly deactivated within this container scope.
                 </div>
               </div>
             </div>
@@ -1051,8 +1057,8 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
                     )}
 
                     <div className="space-y-1">
-                      <span className="text-[10px] font-mono uppercase tracking-widest block font-bold">
-                        // CRYPTOGRAPHIC REPORT OUTCOME
+                      <span className="text-[11px] font-medium uppercase tracking-wider block">
+                        Cryptographic Outcome
                       </span>
                       <p className="text-xs font-semibold leading-relaxed">{pgpResult.message}</p>
                     </div>
@@ -1084,7 +1090,7 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
 
                   {pgpResult.extractedBody && (
                     <div className="bg-slate-900 text-slate-100 p-3.5 rounded-xl font-mono text-[11px] space-y-1 select-all h-28 overflow-y-auto">
-                      <span className="text-[9px] text-slate-400 block uppercase tracking-wider">// ENVELOPE SECURE PLAINTEXT payload</span>
+                      <span className="text-[9px] text-slate-400 block uppercase tracking-wider">Verified Envelope Plaintext</span>
                       <p className="whitespace-pre-wrap">{pgpResult.extractedBody}</p>
                     </div>
                   )}
@@ -1108,8 +1114,19 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
             {/* Left panel: Live Rule Builder and Sandbox Tester */}
             <div className="lg:col-span-5 space-y-4">
               <form onSubmit={handleCreateRule} className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3 text-left">
-                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">// Create Heuristic Pattern</span>
-                <h4 className="text-xs font-bold text-slate-850">Custom Filter Rule Sandbox</h4>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-medium text-slate-900">Custom Filter Rule Sandbox</h4>
+                  <InfoButton
+                    title="Custom Filter Rules"
+                    description="Create custom regular expression rules targeting Subject, Body, or Headers to adjust threat scoring live."
+                    align="right"
+                  />
+                </div>
+                {ruleError && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs">
+                    {ruleError}
+                  </div>
+                )}
                 
                 <div>
                   <label className="block text-[10px] font-mono text-slate-500">RULE TEMPLATE NAME</label>
@@ -1225,10 +1242,7 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
               {customRules.length === 0 ? (
                 <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl py-12 text-center text-sm text-slate-400 font-mono space-y-2">
                   <Terminal className="w-8 h-8 mx-auto text-slate-300" />
-                  <p>No custom regex rules evaluated in database.</p>
-                  <p className="text-xs text-slate-400 max-w-sm mx-auto px-4 font-sans leading-relaxed">
-                     Write a custom key rule on the left panel (e.g. tracking suspicious domain names or words) and hook it live into the spam calculation matrices instantly.
-                  </p>
+                  <p>No custom regex rules saved yet.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[440px] overflow-y-auto no-scrollbar">
@@ -1283,24 +1297,27 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
             {/* Left panel: Interactive check controls */}
             <div className="lg:col-span-5 space-y-4 text-left">
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Privacy Preserving check</span>
-                <h4 className="text-xs font-bold text-slate-850">k-Anonymity Leak Scanner</h4>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  If this email contains sensitive test credentials, API keys, or hardcoded passwords, verify their safety instantly against HaveIBeenPwned's dataset of 10+ billion records.
-                </p>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-medium text-slate-900">k-Anonymity Leak Scanner</h4>
+                  <InfoButton
+                    title="k-Anonymity Leak Scanner"
+                    description="Checks credentials against public breach datasets using SHA-1 prefix range queries. Full passwords never leave your browser."
+                    align="right"
+                  />
+                </div>
 
-                <div className="pt-2 flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button 
                     onClick={scanEmailForCredentials}
-                    className="px-2.5 py-1.5 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 text-indigo-700 text-xs font-mono rounded-lg transition font-bold shadow-3xs"
+                    className="px-3 py-1.5 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 text-indigo-700 text-xs font-medium rounded-full transition cursor-pointer"
                   >
-                    SCAN CURRENT EMAIL FOR CREDENTIALS
+                    Scan Current Email for Credentials
                   </button>
                 </div>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-3xs">
-                <label className="block text-[11px] font-mono text-slate-500">TEST CREDENTIAL STRINGS OR HARDCODED STRINGS</label>
+                <label className="block text-[11px] font-medium text-slate-500">Test Credential or Secret String</label>
                 <div className="flex space-x-2">
                   <input 
                     type="text" 
@@ -1312,14 +1329,11 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
                   <button 
                     onClick={handleCheckCredentialLeak}
                     disabled={checkingLeak || !leakInput}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-mono rounded hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-full transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
-                    {checkingLeak ? 'SCANNING...' : 'CHECK'}
+                    {checkingLeak ? 'Scanning...' : 'Check'}
                   </button>
                 </div>
-                <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
-                  * SECURITY EXCLUSION: Full passwords are never transmitted. The first 5 characters of SHA-1 hash alone are queried. Suffix matching happens entirely on your local machine.
-                </p>
               </div>
             </div>
 
@@ -1424,25 +1438,23 @@ XN3VnQf/UY9YnI79L8Z9p9U/H8878ZgQ5839U8ZpWf8vV98Zc57eZgqV9XpW4...
             
             {/* Left raw trace input */}
             <div className="lg:col-span-5 space-y-4 text-left">
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">MTA routing forensicator</span>
-                <h4 className="text-xs font-bold text-slate-850">Envelope Header Hop visualizer</h4>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Traces the journey of an email chronologically through mail exchange servers (MTAs). Highlight jumps with unverified protocols, blacklisted IPs, or delay spikes.
-                </p>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center justify-between">
+                <h4 className="text-xs font-medium text-slate-900">Envelope Header Hop Visualizer</h4>
+                <InfoButton
+                  title="Header Hop Visualizer"
+                  description="Traces the chronological journey of an email through Mail Transfer Agents (MTAs), flagging unverified relays, blacklisted IPs, or abnormal latency spikes."
+                  align="right"
+                />
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2 shadow-3xs">
-                <label className="block text-[11px] font-mono text-slate-500">RAW HEADERS ENVELOPE (EVALUATING RECEIVED: TRACES)</label>
+                <label className="block text-[11px] font-medium text-slate-500">Raw Received Headers</label>
                 <textarea 
                   rows={8}
                   readOnly
                   value={selectedEmail ? selectedEmail.rawHeaders : 'No headers indexed.'}
-                  className="w-full text-[10px] font-mono bg-slate-50 border border-slate-200 text-slate-600 p-2.5 rounded focus:outline-none focus:ring-1 focus:ring-indigo-200 cursor-not-allowed select-all"
+                  className="w-full text-[10px] font-mono bg-slate-50 border border-slate-200 text-slate-600 p-2.5 rounded focus:outline-none cursor-not-allowed select-all"
                 />
-                <span className="text-[10px] text-slate-400 block font-sans">
-                  * Headers are loaded dynamically when selecting a mail from the dashboard audit buffer index.
-                </span>
               </div>
             </div>
 

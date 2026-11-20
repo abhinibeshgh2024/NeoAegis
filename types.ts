@@ -95,13 +95,3 @@ export interface ChatMessage {
   }[];
 }
 
-export interface AlertNotification {
-  id: string;
-  timestamp: string;
-  sender: string;
-  subject: string;
-  type: 'phishing' | 'credential_harvesting' | 'impersonation' | 'blackmail' | 'malware_distribution';
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  resolved: boolean;
-  details: string;
-}

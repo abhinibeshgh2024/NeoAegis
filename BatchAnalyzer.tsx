@@ -14,6 +14,7 @@ import {
 } from 'recharts';
 import { analyzeEmail } from './spamEngine';
 import { EmailRecord } from './types';
+import InfoButton from './src/components/InfoButton';
 
 interface BatchAnalyzerProps {
   onAddEmailRecords: (records: EmailRecord[]) => void;
@@ -169,14 +170,14 @@ export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps)
       
       {/* 1. Header Information */}
       <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h3 className="text-base font-medium text-[#202124] flex items-center space-x-2">
-            <FileSpreadsheet className="text-[#1a73e8] h-5 w-5" />
-            <span>Batch CSV Audit Workspace</span>
-          </h3>
-          <p className="text-xs text-[#5f6368] mt-1">
-            Perform offline bulk audit scanning, mapping true positives, and plotting ROC threshold values instantly.
-          </p>
+        <div className="flex items-center space-x-2">
+          <FileSpreadsheet className="text-[#1a73e8] h-5 w-5" />
+          <h3 className="text-base font-medium text-[#202124]">Batch CSV Audit Workspace</h3>
+          <InfoButton
+            title="Batch CSV Audit Workspace"
+            description="Upload CSV email datasets to run offline bulk scanning, evaluate true/false positives, and plot ROC thresholds without leaving the browser."
+            align="left"
+          />
         </div>
 
         {/* File actions */}
@@ -199,12 +200,16 @@ export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps)
         
         {/* Confusion Matrix Block */}
         <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-6 lg:col-span-5 space-y-4">
-          <div>
-            <h4 className="text-sm font-medium text-[#202124] flex items-center space-x-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
               <Activity className="h-4 w-4 text-[#1e8e3e]" />
-              <span>Classifier Confusion Matrix</span>
-            </h4>
-            <p className="text-xs text-[#5f6368] mt-0.5">Calculated dynamically over {total} active rows in sandbox</p>
+              <h4 className="text-sm font-medium text-[#202124]">Classifier Confusion Matrix</h4>
+            </div>
+            <InfoButton
+              title="Classifier Confusion Matrix"
+              description={`Calculated dynamically over ${total} active rows in the sandbox, comparing predicted classifications against ground-truth labels.`}
+              align="right"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-3 text-center text-xs">
@@ -256,12 +261,14 @@ export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps)
         <div className="bg-[#f8f9fa] border border-[#dadce0] rounded-2xl p-6 lg:col-span-7 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-3">
-              <div>
-                <h4 className="text-sm font-medium text-[#202124] flex items-center space-x-2">
-                  <FileText className="h-4 w-4 text-[#1a73e8]" />
-                  <span>Receiver Operating Characteristic (ROC Plot)</span>
-                </h4>
-                <p className="text-xs text-[#5f6368] mt-0.5">Mapping scanner sensitivity threshold (FPR vs TPR)</p>
+              <div className="flex items-center space-x-2">
+                <FileText className="h-4 w-4 text-[#1a73e8]" />
+                <h4 className="text-sm font-medium text-[#202124]">Receiver Operating Characteristic (ROC Plot)</h4>
+                <InfoButton
+                  title="ROC Threshold Plot"
+                  description="Maps the scanner sensitivity threshold by plotting True Positive Rate (TPR) against False Positive Rate (FPR)."
+                  align="left"
+                />
               </div>
               <span className="px-2.5 py-0.5 bg-[#e8f0fe] text-[11px] rounded-full font-medium text-[#1967d2]">
                 Live Model
@@ -290,9 +297,13 @@ export default function BatchAnalyzer({ onAddEmailRecords }: BatchAnalyzerProps)
         
         {/* Table Filters controls */}
         <div className="p-5 border-b border-[#dadce0] flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#f8f9fa]">
-          <div>
+          <div className="flex items-center gap-2">
             <h4 className="text-sm font-medium text-[#202124]">Row Scan Record Inventory</h4>
-            <p className="text-xs text-[#5f6368] mt-0.5">Click column headers to sort metrics alphabetically or by risk level</p>
+            <InfoButton
+              title="Row Scan Record Inventory"
+              description="Click column headers (ID, Subject, Spam Score) to sort records or use the pills to filter by prediction outcome."
+              align="left"
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 bg-white p-1 rounded-full border border-[#dadce0] text-xs">

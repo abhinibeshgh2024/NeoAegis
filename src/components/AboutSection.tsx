@@ -246,9 +246,9 @@ export default function AboutSection({
 
           <div className="p-4 rounded-xl bg-[#f8f9fa] border border-[#dadce0] space-y-1.5">
             <Languages className="w-4 h-4 text-[#1e8e3e]" />
-            <h4 className="font-medium text-[#202124]">Local Lure Translator</h4>
+            <h4 className="font-medium text-[#202124]">Payload Translator Tab</h4>
             <p className="text-[11px] text-[#5f6368] leading-relaxed">
-              Translates foreign phishing correspondence locally while highlighting adversarial trigger vocabulary.
+              Dedicated 9-language bidirectional translator with auto-detection and adversarial lure scoring.
             </p>
           </div>
 
