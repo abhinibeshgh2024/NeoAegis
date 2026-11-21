@@ -67,14 +67,15 @@ export interface TrainingHyperparams {
 
 function shannonEntropyNorm(str: string): number {
   if (!str) return 0;
+  const sample = str.length > 2500 ? str.slice(0, 2500) : str;
   const freq: Record<string, number> = {};
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
+  for (let i = 0; i < sample.length; i++) {
+    const ch = sample[i];
     freq[ch] = (freq[ch] || 0) + 1;
   }
   let ent = 0;
   for (const ch in freq) {
-    const p = freq[ch] / str.length;
+    const p = freq[ch] / sample.length;
     ent -= p * Math.log2(p);
   }
   return Math.min(1, ent / 6.5);
@@ -86,9 +87,11 @@ export function extractEngineeredFeatures(
   sender: string,
   rawHeaders: string = ''
 ): number[] {
-  const combined = `${subject} ${body}`.toLowerCase();
+  const boundedBody = body && body.length > 4000 ? body.slice(0, 4000) : (body || '');
+  const boundedHeaders = rawHeaders && rawHeaders.length > 2000 ? rawHeaders.slice(0, 2000) : (rawHeaders || '');
+  const combined = `${subject} ${boundedBody}`.toLowerCase();
   const senderLow = (sender || '').toLowerCase();
-  const headersLow = (rawHeaders || '').toLowerCase();
+  const headersLow = boundedHeaders.toLowerCase();
 
   let urgHits = 0;
   for (const term of URGENCY_TERMS) {
@@ -123,14 +126,16 @@ export function extractEngineeredFeatures(
   } else if (senderLow.length > 0) {
     spoofScore += 0.25;
   }
-  if (/paypai|micros0ft|arnazon|app1e/i.test(`${sender} ${subject} ${body}`)) {
+  if (/paypai|micros0ft|arnazon|app1e/i.test(`${sender} ${subject} ${boundedBody.slice(0, 1000)}`)) {
     spoofScore += 0.45;
   }
   spoofScore = Math.min(1, spoofScore);
 
-  const urls = body.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+  const urls = boundedBody.match(/https?:\/\/[^\s"'<>]+/gi) || [];
   let linkRisk = 0;
-  for (const u of urls) {
+  const maxUrls = Math.min(urls.length, 10);
+  for (let ui = 0; ui < maxUrls; ui++) {
+    const u = urls[ui];
     const low = u.toLowerCase();
     if (/bit\.ly|tinyurl|t\.co|goo\.gl|ow\.ly|is\.gd/.test(low)) linkRisk += 0.45;
     if (/https?:\/\/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(low)) linkRisk += 0.6;
@@ -156,13 +161,22 @@ export function extractEngineeredFeatures(
   if (/display:\s*none|font-size:\s*0/i.test(combined)) headerRisk += 0.45;
   headerRisk = Math.min(1, headerRisk);
 
-  const upper = (body.match(/[A-Z]/g) || []).length;
-  const letters = (body.match(/[a-zA-Z]/g) || []).length;
+  let upper = 0;
+  let letters = 0;
+  for (let i = 0; i < boundedBody.length; i++) {
+    const code = boundedBody.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      upper++;
+      letters++;
+    } else if (code >= 97 && code <= 122) {
+      letters++;
+    }
+  }
   const capsRatio = letters > 0 ? upper / letters : 0;
   const exclam = (combined.match(/!/g) || []).length;
   const currency = (combined.match(/\$/g) || []).length;
   const punctRatio = Math.min(1, (exclam * 0.12) + (currency * 0.18));
-  const entropy = shannonEntropyNorm(body);
+  const entropy = shannonEntropyNorm(boundedBody);
   const styleRisk = Math.min(1, capsRatio * 0.9 + punctRatio * 0.6 + entropy * 0.25);
 
   return [
@@ -178,6 +192,7 @@ export function extractEngineeredFeatures(
 
 export function tokenizeEmail(subject: string, body: string, sender: string): string[] {
   const tokens: string[] = [];
+  const boundedBody = body && body.length > 4000 ? body.slice(0, 4000) : (body || '');
 
   const extractWords = (text: string, weightRepeat: number, prefix = '') => {
     const clean = (text || '')
@@ -202,7 +217,7 @@ export function tokenizeEmail(subject: string, body: string, sender: string): st
   };
 
   extractWords(subject, 2, '');
-  extractWords(body, 1, '');
+  extractWords(boundedBody, 1, '');
 
   const domMatch = (sender || '').toLowerCase().match(/@([a-z0-9.-]+\.[a-z]{2,})/);
   if (domMatch) {
@@ -367,11 +382,15 @@ export async function trainClassifierCore(
   }
 
   const docFreq = new Map<string, number>();
-  for (const s of trainSamples) {
+  for (let i = 0; i < trainSamples.length; i++) {
+    const s = trainSamples[i];
     const uniqueToks = new Set(tokenizeEmail(s.subject, s.body, s.sender));
     uniqueToks.forEach(t => {
       docFreq.set(t, (docFreq.get(t) || 0) + 1);
     });
+    if (i > 0 && i % 2500 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
   }
 
   const sortedVocab = Array.from(docFreq.entries())
@@ -388,12 +407,23 @@ export async function trainClassifierCore(
     return Math.log((nTrainTotal + smoothingOffset) / (df + smoothingOffset)) + 1;
   });
 
-  const trainVecs = trainSamples.map(s =>
-    vectorizeSample(s, vocabMap, idf, ML_CLASSES.indexOf(s.label))
-  );
-  const testVecs = testSamples.map(s =>
-    vectorizeSample(s, vocabMap, idf, ML_CLASSES.indexOf(s.label))
-  );
+  const trainVecs: SparseSampleVector[] = [];
+  for (let i = 0; i < trainSamples.length; i++) {
+    const s = trainSamples[i];
+    trainVecs.push(vectorizeSample(s, vocabMap, idf, ML_CLASSES.indexOf(s.label)));
+    if (i > 0 && i % 2500 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  const testVecs: SparseSampleVector[] = [];
+  for (let i = 0; i < testSamples.length; i++) {
+    const s = testSamples[i];
+    testVecs.push(vectorizeSample(s, vocabMap, idf, ML_CLASSES.indexOf(s.label)));
+    if (i > 0 && i % 2500 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
 
   const totalDims = engCount + vocabulary.length;
   const weights: [number[], number[], number[]] = [
@@ -487,6 +517,8 @@ export async function trainClassifierCore(
       if (epoch % 2 === 0 || epoch === totalEpochs) {
         await new Promise(resolve => setTimeout(resolve, 18));
       }
+    } else if (trainVecs.length > 3000 && epoch % 4 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
 
@@ -546,7 +578,7 @@ export async function trainClassifierCore(
       outcome = 'FN';
     }
 
-    if (src) {
+    if (src && testCases.length < 300) {
       testCases.push({
         id: src.id || `tc-${i + 1}`,
         subject: src.subject,
@@ -682,16 +714,25 @@ export function sanitizeCollectiveModelArtifact(artifact: TrainedModelArtifact):
   };
 }
 
+export function prepareModelVocabCache(model: TrainedModelArtifact | null | undefined): Map<string, number> | undefined {
+  if (!model || !Array.isArray(model.vocabulary) || model.vocabulary.length === 0) return undefined;
+  const vocabMap = new Map<string, number>();
+  for (let i = 0; i < model.vocabulary.length; i++) {
+    vocabMap.set(model.vocabulary[i], i);
+  }
+  return vocabMap;
+}
+
 export function predictWithModel(
   subject: string,
   body: string,
   sender: string,
   rawHeaders: string,
-  model: TrainedModelArtifact
+  model: TrainedModelArtifact,
+  cachedVocabMap?: Map<string, number>
 ): LocalPredictionResult {
   const engCount = model.engineeredFeatureNames.length;
-  const vocabMap = new Map<string, number>();
-  model.vocabulary.forEach((tok, idx) => vocabMap.set(tok, idx));
+  const vocabMap = cachedVocabMap || prepareModelVocabCache(model) || new Map<string, number>();
 
   const vec = vectorizeSample(
     { subject, body, sender, rawHeaders },
@@ -904,45 +945,180 @@ export function classifyGranularEmailTier(
   };
 }
 
-function parseCsvRecords(content: string): string[][] {
+function parseCsvRecordsFast(content: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
-  let field = '';
   let inQuotes = false;
+  let fieldStart = 0;
+  let currentParts: string[] | null = null;
+  const len = content.length;
 
-  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  for (let i = 0; i < normalized.length; i++) {
-    const ch = normalized[i];
-    if (ch === '"') {
-      if (inQuotes && normalized[i + 1] === '"') {
-        field += '"';
+  for (let i = 0; i < len; i++) {
+    const ch = content.charCodeAt(i);
+    if (ch === 34) { // '"'
+      if (inQuotes && content.charCodeAt(i + 1) === 34) {
+        if (!currentParts) currentParts = [];
+        currentParts.push(content.slice(fieldStart, i), '"');
         i++;
+        fieldStart = i + 1;
       } else {
-        inQuotes = !inQuotes;
+        if (!inQuotes && i === fieldStart) {
+          inQuotes = true;
+          fieldStart = i + 1;
+        } else if (inQuotes) {
+          if (!currentParts) currentParts = [];
+          currentParts.push(content.slice(fieldStart, i));
+          inQuotes = false;
+          fieldStart = i + 1;
+        }
       }
-    } else if (ch === ',' && !inQuotes) {
-      row.push(field.trim());
-      field = '';
-    } else if (ch === '\n' && !inQuotes) {
-      row.push(field.trim());
+    } else if (ch === 44 && !inQuotes) { // ','
+      const rawVal = currentParts
+        ? (currentParts.push(content.slice(fieldStart, i)), currentParts.join(''))
+        : content.slice(fieldStart, i);
+      row.push(rawVal.trim());
+      currentParts = null;
+      fieldStart = i + 1;
+    } else if ((ch === 10 || ch === 13) && !inQuotes) { // '\n' or '\r'
+      const rawVal = currentParts
+        ? (currentParts.push(content.slice(fieldStart, i)), currentParts.join(''))
+        : content.slice(fieldStart, i);
+      row.push(rawVal.trim());
+      currentParts = null;
+      if (ch === 13 && content.charCodeAt(i + 1) === 10) {
+        i++;
+      }
       if (row.some(cell => cell.length > 0)) {
         rows.push(row);
       }
       row = [];
-      field = '';
-    } else {
-      field += ch;
+      fieldStart = i + 1;
     }
   }
-  row.push(field.trim());
+
+  if (fieldStart <= len) {
+    const tailVal = currentParts
+      ? (currentParts.push(content.slice(fieldStart)), currentParts.join(''))
+      : content.slice(fieldStart);
+    row.push(tailVal.trim());
+  }
   if (row.some(cell => cell.length > 0)) {
     rows.push(row);
   }
   return rows;
 }
 
+function buildCsvColumnMapping(headerRow: string[]) {
+  const firstCols = headerRow.map(c => c.toLowerCase().replace(/[^a-z0-9_]/g, ''));
+  const hasHeader =
+    firstCols.some(c =>
+      [
+        'subject', 'title', 'body', 'text', 'emailtext', 'bodytext', 'content', 'message',
+        'label', 'class', 'category', 'actual', 'actualstatus', 'status', 'tier',
+        'emailtype', 'spam', 'isspam', 'target', 'type', 'sender', 'from', 'email', 'v1', 'v2'
+      ].includes(c)
+    );
+
+  const subjIdx = hasHeader ? firstCols.findIndex(c => c === 'subject' || c === 'title') : 0;
+  const bodyIdx = hasHeader
+    ? firstCols.findIndex(c =>
+        c === 'body' ||
+        c === 'text' ||
+        c === 'emailtext' ||
+        c === 'bodytext' ||
+        c === 'content' ||
+        c === 'message' ||
+        c === 'v2'
+      )
+    : 1;
+  const senderIdx = hasHeader ? firstCols.findIndex(c => c === 'sender' || c === 'from' || c === 'email') : 2;
+  const labelIdx = hasHeader
+    ? firstCols.findIndex(c =>
+        c === 'label' ||
+        c === 'class' ||
+        c === 'category' ||
+        c === 'actual' ||
+        c === 'actualstatus' ||
+        c === 'status' ||
+        c === 'tier' ||
+        c === 'emailtype' ||
+        c === 'spam' ||
+        c === 'isspam' ||
+        c === 'target' ||
+        c === 'type' ||
+        c === 'v1'
+      )
+    : 3;
+  const headersIdx = hasHeader ? firstCols.findIndex(c => c === 'rawheaders' || c === 'headers') : -1;
+
+  return { hasHeader, subjIdx, bodyIdx, senderIdx, labelIdx, headersIdx };
+}
+
+function rowToTrainingSample(
+  cols: string[],
+  rowIndex: number,
+  batchStamp: number,
+  colMap: ReturnType<typeof buildCsvColumnMapping>
+): TrainingSample | null {
+  if (cols.length < 2) return null;
+  const { hasHeader, subjIdx, bodyIdx, senderIdx, labelIdx, headersIdx } = colMap;
+
+  let rawBody = '';
+  if (hasHeader) {
+    rawBody = bodyIdx >= 0 ? cols[bodyIdx] || '' : subjIdx >= 0 ? cols[subjIdx] || '' : '';
+  } else {
+    rawBody = cols[1] || cols[0] || '';
+  }
+
+  let rawSubject = '';
+  if (hasHeader) {
+    rawSubject = subjIdx >= 0 ? cols[subjIdx] || '' : '';
+  } else {
+    rawSubject = cols[0] || '';
+  }
+
+  if (!rawSubject && rawBody) {
+    rawSubject = rawBody.slice(0, 72).replace(/\s+/g, ' ').trim();
+  }
+  const subject = rawSubject || '(No Subject)';
+  const body = rawBody || subject;
+  const sender = hasHeader
+    ? senderIdx >= 0 && cols[senderIdx]
+      ? cols[senderIdx]
+      : 'dataset@uploaded.csv'
+    : cols.length >= 3 && cols[2]
+    ? cols[2]
+    : 'dataset@uploaded.csv';
+  const rawHeaders = headersIdx >= 0 && cols[headersIdx] ? cols[headersIdx] : `From: ${sender}`;
+  const rawLabel =
+    labelIdx >= 0
+      ? cols[labelIdx] || ''
+      : !hasHeader && cols.length >= 4
+      ? cols[cols.length - 1]
+      : '';
+  const classified = classifyGranularEmailTier(
+    subject,
+    body,
+    sender,
+    rawHeaders,
+    rawLabel && rawLabel.trim().length > 0 ? rawLabel : undefined
+  );
+
+  return {
+    id: `csv-${batchStamp}-${rowIndex}`,
+    subject,
+    body,
+    sender,
+    rawHeaders,
+    label: classified.baseLabel,
+    granularTier: classified.granularTier,
+    evaluatedScore: classified.severityScore,
+    source: 'upload'
+  };
+}
+
 export function parseDatasetFileContent(content: string, fileName: string): TrainingSample[] {
-  const isJson = fileName.toLowerCase().endsWith('.json') || content.trim().startsWith('[') || content.trim().startsWith('{');
+  const isJson = fileName.toLowerCase().endsWith('.json') || content.trimStart().startsWith('[') || content.trimStart().startsWith('{');
   const samples: TrainingSample[] = [];
   const batchStamp = Date.now();
 
@@ -992,109 +1168,108 @@ export function parseDatasetFileContent(content: string, fileName: string): Trai
     return samples;
   }
 
-  const rows = parseCsvRecords(content);
+  const rows = parseCsvRecordsFast(content);
   if (rows.length === 0) return [];
 
-  const firstCols = rows[0].map(c => c.toLowerCase().replace(/[^a-z0-9_]/g, ''));
-  const hasHeader =
-    firstCols.some(c =>
-      [
-        'subject', 'title', 'body', 'text', 'emailtext', 'bodytext', 'content', 'message',
-        'label', 'class', 'category', 'actual', 'actualstatus', 'status', 'tier',
-        'emailtype', 'spam', 'isspam', 'target', 'type', 'sender', 'from', 'email', 'v1', 'v2'
-      ].includes(c)
-    );
-
-  const subjIdx = hasHeader ? firstCols.findIndex(c => c === 'subject' || c === 'title') : 0;
-  const bodyIdx = hasHeader
-    ? firstCols.findIndex(c =>
-        c === 'body' ||
-        c === 'text' ||
-        c === 'emailtext' ||
-        c === 'bodytext' ||
-        c === 'content' ||
-        c === 'message' ||
-        c === 'v2'
-      )
-    : 1;
-  const senderIdx = hasHeader ? firstCols.findIndex(c => c === 'sender' || c === 'from' || c === 'email') : 2;
-  const labelIdx = hasHeader
-    ? firstCols.findIndex(c =>
-        c === 'label' ||
-        c === 'class' ||
-        c === 'category' ||
-        c === 'actual' ||
-        c === 'actualstatus' ||
-        c === 'status' ||
-        c === 'tier' ||
-        c === 'emailtype' ||
-        c === 'spam' ||
-        c === 'isspam' ||
-        c === 'target' ||
-        c === 'type' ||
-        c === 'v1'
-      )
-    : 3;
-  const headersIdx = hasHeader ? firstCols.findIndex(c => c === 'rawheaders' || c === 'headers') : -1;
-
-  const startRow = hasHeader ? 1 : 0;
+  const colMap = buildCsvColumnMapping(rows[0]);
+  const startRow = colMap.hasHeader ? 1 : 0;
   for (let i = startRow; i < rows.length; i++) {
-    const cols = rows[i];
-    if (cols.length < 2) continue;
-
-    let rawBody = '';
-    if (hasHeader) {
-      rawBody = bodyIdx >= 0 ? cols[bodyIdx] || '' : subjIdx >= 0 ? cols[subjIdx] || '' : '';
-    } else {
-      rawBody = cols[1] || cols[0] || '';
-    }
-
-    let rawSubject = '';
-    if (hasHeader) {
-      rawSubject = subjIdx >= 0 ? cols[subjIdx] || '' : '';
-    } else {
-      rawSubject = cols[0] || '';
-    }
-
-    if (!rawSubject && rawBody) {
-      rawSubject = rawBody.slice(0, 72).replace(/\s+/g, ' ').trim();
-    }
-    const subject = rawSubject || '(No Subject)';
-    const body = rawBody || subject;
-    const sender = hasHeader
-      ? senderIdx >= 0 && cols[senderIdx]
-        ? cols[senderIdx]
-        : 'dataset@uploaded.csv'
-      : cols.length >= 3 && cols[2]
-      ? cols[2]
-      : 'dataset@uploaded.csv';
-    const rawHeaders = headersIdx >= 0 && cols[headersIdx] ? cols[headersIdx] : `From: ${sender}`;
-    const rawLabel =
-      labelIdx >= 0
-        ? cols[labelIdx] || ''
-        : !hasHeader && cols.length >= 4
-        ? cols[cols.length - 1]
-        : '';
-    const classified = classifyGranularEmailTier(
-      subject,
-      body,
-      sender,
-      rawHeaders,
-      rawLabel && rawLabel.trim().length > 0 ? rawLabel : undefined
-    );
-
-    samples.push({
-      id: `csv-${batchStamp}-${i}`,
-      subject,
-      body,
-      sender,
-      rawHeaders,
-      label: classified.baseLabel,
-      granularTier: classified.granularTier,
-      evaluatedScore: classified.severityScore,
-      source: 'upload'
-    });
+    const item = rowToTrainingSample(rows[i], i, batchStamp, colMap);
+    if (item) samples.push(item);
   }
 
+  return samples;
+}
+
+/**
+ * Cooperative non-blocking parser for large 50,000+ email CSV/JSON uploads.
+ * Yields to the browser/Node event loop every 1,500 rows so the UI stays responsive at 60fps.
+ */
+export async function parseDatasetFileContentAsync(
+  content: string,
+  fileName: string,
+  onProgress?: (pct: number, parsedCount: number, totalRows: number) => void
+): Promise<TrainingSample[]> {
+  const isJson = fileName.toLowerCase().endsWith('.json') || content.trimStart().startsWith('[') || content.trimStart().startsWith('{');
+  const batchStamp = Date.now();
+  const samples: TrainingSample[] = [];
+  const YIELD_CHUNK = 1500;
+
+  if (isJson) {
+    const parsed = JSON.parse(content);
+    const rows = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.samples)
+      ? parsed.samples
+      : Array.isArray(parsed?.data)
+      ? parsed.data
+      : Array.isArray(parsed?.emails)
+      ? parsed.emails
+      : [];
+    const total = rows.length;
+    for (let idx = 0; idx < total; idx++) {
+      const row = rows[idx];
+      if (row && typeof row === 'object') {
+        const subject = String(row.subject || row.title || '').trim();
+        const body = String(row.body || row.text || row.content || row.message || '').trim();
+        const sender = String(row.sender || row.from || 'unknown@sender.org').trim();
+        const rawHeaders = row.rawHeaders ? String(row.rawHeaders) : `From: ${sender}`;
+        const rawLabelVal =
+          row.tier ?? row.granularTier ?? row.label ?? row.category ?? row.class ?? row.actual ?? (row.isSpam === true ? 'spam' : row.isSpam === false ? 'legitimate' : '');
+        const hasExplicitLabel = String(rawLabelVal || '').trim().length > 0;
+        const classified = classifyGranularEmailTier(
+          subject || '(No Subject)',
+          body || subject,
+          sender,
+          rawHeaders,
+          hasExplicitLabel ? String(rawLabelVal) : undefined
+        );
+        if (subject || body) {
+          samples.push({
+            id: `json-${batchStamp}-${idx}`,
+            subject: subject || '(No Subject)',
+            body: body || subject,
+            sender,
+            rawHeaders,
+            label: classified.baseLabel,
+            granularTier: classified.granularTier,
+            evaluatedScore: classified.severityScore,
+            source: 'upload'
+          });
+        }
+      }
+      if (idx > 0 && idx % YIELD_CHUNK === 0) {
+        onProgress?.(Math.min(99, Math.round((idx / Math.max(1, total)) * 100)), samples.length, total);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+    onProgress?.(100, samples.length, total);
+    return samples;
+  }
+
+  onProgress?.(5, 0, 0);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const rows = parseCsvRecordsFast(content);
+  if (rows.length === 0) {
+    onProgress?.(100, 0, 0);
+    return [];
+  }
+
+  const colMap = buildCsvColumnMapping(rows[0]);
+  const startRow = colMap.hasHeader ? 1 : 0;
+  const totalRows = Math.max(0, rows.length - startRow);
+
+  for (let i = startRow; i < rows.length; i++) {
+    const item = rowToTrainingSample(rows[i], i, batchStamp, colMap);
+    if (item) samples.push(item);
+
+    const processed = i - startRow + 1;
+    if (processed % YIELD_CHUNK === 0) {
+      onProgress?.(Math.min(99, Math.round((processed / Math.max(1, totalRows)) * 100)), samples.length, totalRows);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  onProgress?.(100, samples.length, totalRows);
   return samples;
 }

@@ -28,7 +28,8 @@ import {
   CSV_SCHEMA_EXAMPLE_CONTENT,
   CollectiveBackendStats,
   ModelSelectionMode,
-  parseDatasetFileContent,
+  parseDatasetFileContentAsync,
+  prepareModelVocabCache,
   trainLocalClassifier,
   clearUserTrainedModel,
   validateAndImportModelJson,
@@ -148,10 +149,14 @@ export default function TrainerLab({
   const [newBody, setNewBody] = useState('');
   const [newLabel, setNewLabel] = useState<EmailLabel>('phishing');
 
-  // Pre-insert CSV/JSON upload preview modal state
+  // Pre-insert CSV/JSON upload preview modal state + pagination
   const [pendingCsvModal, setPendingCsvModal] = useState<PendingCsvModalState | null>(null);
   const [modalTierFilter, setModalTierFilter] = useState<'all' | GranularThreatTier>('all');
   const [alsoSyncToOtherSections, setAlsoSyncToOtherSections] = useState(true);
+  const [csvUploadProgress, setCsvUploadProgress] = useState<{ pct: number; stage: string } | null>(null);
+  const [stagingPage, setStagingPage] = useState<number>(1);
+  const [modalPage, setModalPage] = useState<number>(1);
+  const TABLE_PAGE_SIZE = 50;
 
   // Image Dataset Staging State (blank by default — hydrated strictly per-user)
   const [imageSamples, setImageSamples] = useState<ImageTrainingSample[]>(() => {
@@ -241,10 +246,13 @@ export default function TrainerLab({
     }
   }, [currentUserUid, syncTick]);
 
-  // Persist text dataset whenever user uploads CSV, adds, re-labels, or removes samples
+  // Persist text dataset asynchronously (debounced so 50k row state updates stay instant)
   useEffect(() => {
     if (!currentUserUid) return;
-    saveUserTrainerSamples(currentUserUid, samples);
+    const timer = setTimeout(() => {
+      saveUserTrainerSamples(currentUserUid, samples);
+    }, 120);
+    return () => clearTimeout(timer);
   }, [samples, currentUserUid]);
 
   // Sync first uploaded image into probe slot if none selected
@@ -371,66 +379,113 @@ export default function TrainerLab({
 
   const latestTelemetry = chartHistory.length > 0 ? chartHistory[chartHistory.length - 1] : null;
 
-  // Upload CSV or JSON text dataset -> Evaluate & Open Pre-Insert Breakdown Popup Modal FIRST
-  const handleDatasetUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const totalStagingPages = Math.max(1, Math.ceil(filteredSamples.length / TABLE_PAGE_SIZE));
+  const safeStagingPage = Math.min(stagingPage, totalStagingPages);
+  const paginatedSamples = useMemo(() => {
+    const start = (safeStagingPage - 1) * TABLE_PAGE_SIZE;
+    return filteredSamples.slice(start, start + TABLE_PAGE_SIZE);
+  }, [filteredSamples, safeStagingPage]);
+
+  useEffect(() => {
+    setStagingPage(1);
+  }, [labelFilter, tierFilter, searchQuery]);
+
+  const modalFilteredRows = useMemo(() => {
+    if (!pendingCsvModal) return [];
+    return pendingCsvModal.rows.filter(r => modalTierFilter === 'all' || r.granularTier === modalTierFilter);
+  }, [pendingCsvModal, modalTierFilter]);
+
+  const totalModalPages = Math.max(1, Math.ceil(modalFilteredRows.length / TABLE_PAGE_SIZE));
+  const safeModalPage = Math.min(modalPage, totalModalPages);
+  const paginatedModalRows = useMemo(() => {
+    const start = (safeModalPage - 1) * TABLE_PAGE_SIZE;
+    return modalFilteredRows.slice(start, start + TABLE_PAGE_SIZE);
+  }, [modalFilteredRows, safeModalPage]);
+
+  useEffect(() => {
+    setModalPage(1);
+  }, [modalTierFilter, pendingCsvModal?.fileName]);
+
+  // Upload CSV or JSON text dataset -> Async Chunked Parse + Score + Open Pre-Insert Breakdown Popup Modal
+  const handleDatasetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
     setStatusMessage(null);
+    setCsvUploadProgress({ pct: 3, stage: `Reading "${file.name}"...` });
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const text = String(ev.target?.result || '');
-        const parsed = parseDatasetFileContent(text, file.name);
-        if (parsed.length === 0) {
-          setStatusMessage({
-            type: 'error',
-            text: 'No valid records found. Ensure your CSV/JSON includes subject, body, sender, and label fields.'
-          });
-          return;
-        }
-
-        // Enrich every parsed email using real local model/heuristic engine for accurate granular tier counts
-        const analyzedRows: PendingCsvRow[] = parsed.map(item => {
-          const evalRes = analyzeEmailWithModel(
-            item.subject,
-            item.body,
-            item.rawHeaders || `From: ${item.sender}`,
-            item.sender
-          );
-          const tierInfo = classifyGranularEmailTier(
-            item.subject,
-            item.body,
-            item.sender,
-            item.rawHeaders || '',
-            item.granularTier || item.label,
-            evalRes.metrics.spamScore,
-            evalRes.metrics.phishingLikelihood
-          );
-          return {
-            ...item,
-            label: tierInfo.baseLabel,
-            granularTier: tierInfo.granularTier,
-            evaluatedScore: evalRes.metrics.spamScore,
-            evaluatedPhishingScore: evalRes.metrics.phishingLikelihood,
-            included: true
-          };
+    try {
+      const text = await file.text();
+      const parsed = await parseDatasetFileContentAsync(text, file.name, (pct, parsedCount) => {
+        setCsvUploadProgress({
+          pct: Math.max(5, Math.round(pct * 0.5)),
+          stage: `Parsing dataset (${parsedCount.toLocaleString()} emails parsed)...`
         });
-
-        setModalTierFilter('all');
-        setPendingCsvModal({
-          fileName: file.name,
-          rows: analyzedRows
-        });
-      } catch (err: any) {
+      });
+      if (parsed.length === 0) {
         setStatusMessage({
           type: 'error',
-          text: err?.message || 'Failed to parse dataset file.'
+          text: 'No valid records found. Ensure your CSV/JSON includes subject, body, sender, and label fields.'
         });
+        return;
       }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+
+      // Enrich every parsed email cooperatively using cached active model & vocabMap so 50k CSV never hangs
+      const scoringModel = activeModel || loadUserTrainedModel(currentUserUid);
+      const vocabMap = prepareModelVocabCache(scoringModel);
+      const analyzedRows: PendingCsvRow[] = new Array(parsed.length);
+      const CHUNK = 1200;
+
+      for (let i = 0; i < parsed.length; i++) {
+        const item = parsed[i];
+        const evalRes = analyzeEmailWithModel(
+          item.subject,
+          item.body,
+          item.rawHeaders || `From: ${item.sender}`,
+          item.sender,
+          scoringModel,
+          vocabMap
+        );
+        const tierInfo = classifyGranularEmailTier(
+          item.subject,
+          item.body,
+          item.sender,
+          item.rawHeaders || '',
+          item.granularTier || item.label,
+          evalRes.metrics.spamScore,
+          evalRes.metrics.phishingLikelihood
+        );
+        analyzedRows[i] = {
+          ...item,
+          label: tierInfo.baseLabel,
+          granularTier: tierInfo.granularTier,
+          evaluatedScore: evalRes.metrics.spamScore,
+          evaluatedPhishingScore: evalRes.metrics.phishingLikelihood,
+          included: true
+        };
+        if (i > 0 && i % CHUNK === 0) {
+          setCsvUploadProgress({
+            pct: 50 + Math.round((i / parsed.length) * 48),
+            stage: `Categorizing & scoring (${i.toLocaleString()} / ${parsed.length.toLocaleString()})...`
+          });
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      setModalTierFilter('all');
+      setModalPage(1);
+      setPendingCsvModal({
+        fileName: file.name,
+        rows: analyzedRows
+      });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err?.message || 'Failed to parse dataset file.'
+      });
+    } finally {
+      setCsvUploadProgress(null);
+    }
   };
 
   // Modal summary counts across core classes & 6 granular categories
@@ -477,82 +532,95 @@ export default function TrainerLab({
 
     const nextSamples = mergeSamplesByKey(selected, samples);
     setSamples(nextSamples);
-    // Persist synchronously BEFORE archive/vault sync so rows can never vanish
     saveUserTrainerSamples(currentUserUid, nextSamples);
-
-    const idToken = await getFirebaseIdTokenSafely();
-    await syncUserWorkspaceToBackend(currentUserUid, idToken, {
-      trainerSamples: nextSamples
+    setPendingCsvModal(null);
+    setCsvUploadProgress({
+      pct: 10,
+      stage: `Saving ${selected.length.toLocaleString()} emails to your Vault & collective model...`
     });
 
-    // Persist privately to Firestore (`user_dataset_emails`) for this user only
-    await saveUserDatasetEmailsBatch(
-      currentUserUid,
-      selected.map(s => ({
-        id: s.id,
-        subject: s.subject,
-        sender: s.sender,
-        body: s.body,
-        rawHeaders: s.rawHeaders || `From: ${s.sender}`,
-        label: s.label,
-        granularTier: s.granularTier || 'spam',
-        spamScore: s.evaluatedScore ?? 50,
-        phishingLikelihood: s.evaluatedPhishingScore ?? 40,
-        source: 'upload'
-      }))
-    );
+    try {
+      const idToken = await getFirebaseIdTokenSafely();
+      await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+        trainerSamples: nextSamples
+      });
 
-    if (alsoSyncToOtherSections && onArchiveUploadedCsvEmails) {
-      onArchiveUploadedCsvEmails(selected);
-    }
+      await saveUserDatasetEmailsBatch(
+        currentUserUid,
+        selected.slice(0, 250).map(s => ({
+          id: s.id,
+          subject: s.subject,
+          sender: s.sender,
+          body: s.body,
+          rawHeaders: s.rawHeaders || `From: ${s.sender}`,
+          label: s.label,
+          granularTier: s.granularTier || 'spam',
+          spamScore: s.evaluatedScore ?? 50,
+          phishingLikelihood: s.evaluatedPhishingScore ?? 40,
+          source: 'upload'
+        }))
+      );
 
-    // Contribute anonymized copies to collective backend dataset & auto-retrain collective model
-    const backendRes = await contributeSamplesToBackend(
-      currentUserUid,
-      idToken,
-      selected,
-      {
-        trainSplitRatio: trainSplitPct / 100,
-        learningRate,
-        smoothingLambda,
-        epochs
-      },
-      true
-    );
-    if (backendRes.ok) {
-      onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
-    }
+      if (alsoSyncToOtherSections && onArchiveUploadedCsvEmails) {
+        onArchiveUploadedCsvEmails(selected);
+      }
 
-    setPendingCsvModal(null);
+      // Contribute anonymized copies in chunks to Collective Backend & auto-retrain on final chunk
+      const backendRes = await contributeSamplesToBackend(
+        currentUserUid,
+        idToken,
+        selected,
+        {
+          trainSplitRatio: trainSplitPct / 100,
+          learningRate,
+          smoothingLambda,
+          epochs
+        },
+        true,
+        (uploadedCount, totalCount) => {
+          setCsvUploadProgress({
+            pct: Math.min(96, 15 + Math.round((uploadedCount / Math.max(1, totalCount)) * 80)),
+            stage: `Contributing chunk ${uploadedCount.toLocaleString()} / ${totalCount.toLocaleString()} to backend training...`
+          });
+        }
+      );
+      if (backendRes.ok) {
+        onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
+      }
 
-    if (trainImmediately) {
-      if (nextSamples.length < 4 && (!backendRes.stats || backendRes.stats.totalCombinedEmails < 4)) {
-        setStatusMessage({
-          type: 'error',
-          text: `Inserted ${selected.length} email(s) from "${fileName}", but at least 4 total emails are required to train.`
-        });
+      setCsvUploadProgress(null);
+
+      if (trainImmediately) {
+        if (nextSamples.length < 4 && (!backendRes.stats || backendRes.stats.totalCombinedEmails < 4)) {
+          setStatusMessage({
+            type: 'error',
+            text: `Inserted ${selected.length.toLocaleString()} email(s) from "${fileName}", but at least 4 total emails are required to train.`
+          });
+          return;
+        }
+        if (nextSamples.length >= 4) {
+          await runTextTraining(
+            nextSamples,
+            `Inserted ${selected.length.toLocaleString()} email(s) from "${fileName}" and trained Text Model`
+          );
+        } else if (backendRes.ok && backendRes.model) {
+          onModelUpdated(loadUserTrainedModel(currentUserUid));
+          setStatusMessage({
+            type: 'success',
+            text: `Inserted ${selected.length.toLocaleString()} email(s) from "${fileName}" and updated Collective Backend Model (${backendRes.stats?.totalCombinedEmails.toLocaleString() || 0} combined emails · ${(backendRes.model.evaluation.accuracy * 100).toFixed(1)}% Acc).`
+          });
+        }
         return;
       }
-      if (nextSamples.length >= 4) {
-        await runTextTraining(
-          nextSamples,
-          `Inserted ${selected.length} email(s) from "${fileName}" and trained Text Model`
-        );
-      } else if (backendRes.ok && backendRes.model) {
-        onModelUpdated(loadUserTrainedModel(currentUserUid));
-        setStatusMessage({
-          type: 'success',
-          text: `Inserted ${selected.length} email(s) from "${fileName}" and updated Collective Backend Model (${backendRes.stats?.totalCombinedEmails || 0} combined emails · ${(backendRes.model.evaluation.accuracy * 100).toFixed(1)}% Acc).`
-        });
-      }
-      return;
-    }
 
-    setStatusMessage({
-      type: 'success',
-      text: `Saved ${selected.length} email(s) from "${fileName}" privately to your Trainer Dataset${alsoSyncToOtherSections ? ', Personal Audit Stream & Batch CSV Auditor' : ''}${backendRes.ok && backendRes.stats ? `, and trained Collective Backend Model (${backendRes.stats.totalCombinedEmails} combined emails)` : ''}.`,
-      action: nextSamples.length >= 4 ? 'train_text' : undefined
-    });
+      setStatusMessage({
+        type: 'success',
+        text: `Saved ${selected.length.toLocaleString()} email(s) from "${fileName}" privately to your Trainer Dataset${alsoSyncToOtherSections ? ', Personal Audit Stream & Batch CSV Auditor' : ''}${backendRes.ok && backendRes.stats ? `, and trained Collective Backend Model (${backendRes.stats.totalCombinedEmails.toLocaleString()} combined emails)` : ''}.`,
+        action: nextSamples.length >= 4 ? 'train_text' : undefined
+      });
+    } finally {
+      setCsvUploadProgress(null);
+    }
   };
 
   const handleUpdateModalRowLabel = (rowId: string, nextLabel: EmailLabel) => {
@@ -2006,6 +2074,21 @@ export default function TrainerLab({
                 </div>
               </div>
 
+              {csvUploadProgress && (
+                <div className="p-3.5 bg-white border border-[#1a73e8]/40 rounded-xl space-y-1.5" id="trainer-csv-progress">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-[#1a73e8]">{csvUploadProgress.stage}</span>
+                    <span className="font-mono font-semibold text-[#1a73e8]">{csvUploadProgress.pct}%</span>
+                  </div>
+                  <div className="w-full h-2 bg-[#e8f0fe] rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#1a73e8] transition-all duration-150"
+                      style={{ width: `${csvUploadProgress.pct}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {showAddSample && (
                 <form onSubmit={handleAddManualSample} className="bg-white border border-[#dadce0] rounded-xl p-4 space-y-3 text-xs">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -2111,7 +2194,7 @@ export default function TrainerLab({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#f1f3f4]">
-                  {filteredSamples.map(sample => {
+                  {paginatedSamples.map(sample => {
                     const tier: GranularThreatTier =
                       sample.granularTier ||
                       classifyGranularEmailTier(
@@ -2180,6 +2263,53 @@ export default function TrainerLab({
                 </tbody>
               </table>
             </div>
+
+            {filteredSamples.length > TABLE_PAGE_SIZE && (
+              <div className="px-5 py-3 border-t border-[#dadce0] bg-[#f8f9fa] flex flex-wrap items-center justify-between gap-3 text-xs tabular-nums">
+                <span className="text-[#5f6368]">
+                  Showing <strong>{((safeStagingPage - 1) * TABLE_PAGE_SIZE + 1).toLocaleString()}</strong>–
+                  <strong>{Math.min(safeStagingPage * TABLE_PAGE_SIZE, filteredSamples.length).toLocaleString()}</strong> of{' '}
+                  <strong>{filteredSamples.length.toLocaleString()}</strong> rows
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setStagingPage(1)}
+                    disabled={safeStagingPage <= 1}
+                    className="px-2.5 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                  >
+                    First
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStagingPage(p => Math.max(1, p - 1))}
+                    disabled={safeStagingPage <= 1}
+                    className="px-3 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                  >
+                    Prev
+                  </button>
+                  <span className="px-2 font-mono text-[#202124]">
+                    Page <strong>{safeStagingPage}</strong> / {totalStagingPages.toLocaleString()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setStagingPage(p => Math.min(totalStagingPages, p + 1))}
+                    disabled={safeStagingPage >= totalStagingPages}
+                    className="px-3 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                  >
+                    Next
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStagingPage(totalStagingPages)}
+                    disabled={safeStagingPage >= totalStagingPages}
+                    className="px-2.5 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -2666,60 +2796,89 @@ export default function TrainerLab({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#f1f3f4]">
-                      {pendingCsvModal.rows
-                        .filter(r => modalTierFilter === 'all' || r.granularTier === modalTierFilter)
-                        .map(row => {
-                          const tier = row.granularTier || 'spam';
-                          return (
-                            <tr key={row.id} className="hover:bg-[#f8f9fa]">
-                              <td className="py-2 px-3 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={row.included}
-                                  onChange={() => handleToggleModalRow(row.id)}
-                                  className="accent-[#1a73e8] cursor-pointer"
-                                  aria-label={`Include ${row.subject}`}
-                                />
-                              </td>
-                              <td className="py-2 px-3 max-w-xs">
-                                <div className="font-medium text-[#202124] truncate">{row.subject}</div>
-                                <div className="text-[10px] font-mono text-[#5f6368] truncate">{row.sender}</div>
-                              </td>
-                              <td className="py-2 px-3 text-right font-mono font-semibold">
-                                <span className={(row.evaluatedScore || 0) >= 70 ? 'text-[#d93025]' : (row.evaluatedScore || 0) >= 45 ? 'text-[#e37400]' : 'text-[#137333]'}>
-                                  {row.evaluatedScore ?? '--'}%
-                                </span>
-                              </td>
-                              <td className="py-2 px-3 whitespace-nowrap">
-                                <select
-                                  value={tier}
-                                  onChange={e => handleUpdateModalRowTier(row.id, e.target.value as GranularThreatTier)}
-                                  className={`text-[11px] font-medium px-2 py-1 rounded-lg border cursor-pointer focus:outline-none ${getTierBadgeClasses(tier)}`}
-                                >
-                                  {TIER_ORDER.map(t => (
-                                    <option key={t} value={t}>
-                                      {GRANULAR_TIER_META[t].label}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td className="py-2 px-3 whitespace-nowrap">
-                                <select
-                                  value={row.label}
-                                  onChange={e => handleUpdateModalRowLabel(row.id, e.target.value as EmailLabel)}
-                                  className="text-[11px] font-medium bg-white border border-[#dadce0] px-2 py-1 rounded-lg cursor-pointer"
-                                >
-                                  <option value="legitimate">legitimate</option>
-                                  <option value="spam">spam</option>
-                                  <option value="phishing">phishing</option>
-                                </select>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                      {paginatedModalRows.map(row => {
+                        const tier = row.granularTier || 'spam';
+                        return (
+                          <tr key={row.id} className="hover:bg-[#f8f9fa]">
+                            <td className="py-2 px-3 text-center">
+                              <input
+                                type="checkbox"
+                                checked={row.included}
+                                onChange={() => handleToggleModalRow(row.id)}
+                                className="accent-[#1a73e8] cursor-pointer"
+                                aria-label={`Include ${row.subject}`}
+                              />
+                            </td>
+                            <td className="py-2 px-3 max-w-xs">
+                              <div className="font-medium text-[#202124] truncate">{row.subject}</div>
+                              <div className="text-[10px] font-mono text-[#5f6368] truncate">{row.sender}</div>
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-semibold">
+                              <span className={(row.evaluatedScore || 0) >= 70 ? 'text-[#d93025]' : (row.evaluatedScore || 0) >= 45 ? 'text-[#e37400]' : 'text-[#137333]'}>
+                                {row.evaluatedScore ?? '--'}%
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <select
+                                value={tier}
+                                onChange={e => handleUpdateModalRowTier(row.id, e.target.value as GranularThreatTier)}
+                                className={`text-[11px] font-medium px-2 py-1 rounded-lg border cursor-pointer focus:outline-none ${getTierBadgeClasses(tier)}`}
+                              >
+                                {TIER_ORDER.map(t => (
+                                  <option key={t} value={t}>
+                                    {GRANULAR_TIER_META[t].label}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <select
+                                value={row.label}
+                                onChange={e => handleUpdateModalRowLabel(row.id, e.target.value as EmailLabel)}
+                                className="text-[11px] font-medium bg-white border border-[#dadce0] px-2 py-1 rounded-lg cursor-pointer"
+                              >
+                                <option value="legitimate">legitimate</option>
+                                <option value="spam">spam</option>
+                                <option value="phishing">phishing</option>
+                              </select>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+
+                {modalFilteredRows.length > TABLE_PAGE_SIZE && (
+                  <div className="px-4 py-2.5 border-t border-[#dadce0] bg-[#f8f9fa] flex flex-wrap items-center justify-between gap-2 text-[11px] tabular-nums">
+                    <span className="text-[#5f6368]">
+                      Showing <strong>{((safeModalPage - 1) * TABLE_PAGE_SIZE + 1).toLocaleString()}</strong>–
+                      <strong>{Math.min(safeModalPage * TABLE_PAGE_SIZE, modalFilteredRows.length).toLocaleString()}</strong> of{' '}
+                      <strong>{modalFilteredRows.length.toLocaleString()}</strong> emails
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setModalPage(p => Math.max(1, p - 1))}
+                        disabled={safeModalPage <= 1}
+                        className="px-2.5 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                      >
+                        Prev
+                      </button>
+                      <span className="px-1.5 font-mono">
+                        Page <strong>{safeModalPage}</strong> / {totalModalPages.toLocaleString()}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setModalPage(p => Math.min(totalModalPages, p + 1))}
+                        disabled={safeModalPage >= totalModalPages}
+                        className="px-2.5 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Sync to Vault & Batch Auditor Option */}

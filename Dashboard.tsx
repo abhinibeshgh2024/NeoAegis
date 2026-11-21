@@ -55,8 +55,8 @@ export default function Dashboard({
     ? Math.round(records.reduce((acc, r) => acc + r.metrics.defenseRating, 0) / totalAnalyzed) 
     : 0;
 
-  // Recharts chart data 
-  const aggregateScoreData = records.map(r => ({
+  // Recharts chart data (bounded to latest 60 items so 50,000-row vaults never lag SVG charts)
+  const aggregateScoreData = records.slice(0, 60).map(r => ({
     name: r.subject.substring(0, 20) + '...',
     'Spam Score': r.metrics.spamScore,
     'Phishing Likelihood': r.metrics.phishingLikelihood,

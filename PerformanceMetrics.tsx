@@ -17,8 +17,10 @@ import {
   CollectiveBackendStats,
   loadUserBatchRows,
   loadUserImageAssessments,
+  loadUserTrainedModel,
   loadUserTrainerImages,
-  loadUserTrainerSamples
+  loadUserTrainerSamples,
+  prepareModelVocabCache
 } from './src/lib/localMlEngine';
 import { predictImageWithModel } from './src/lib/imageVisionEngine';
 import { analyzeEmailWithModel } from './spamEngine';
@@ -58,12 +60,16 @@ export default function PerformanceMetrics({
   syncTick = 0
 }: PerformanceMetricsProps) {
   const [tableFilter, setTableFilter] = useState<'all' | 'mail' | 'image' | 'mismatch'>('all');
+  const [tablePage, setTablePage] = useState<number>(1);
+  const PAGE_SIZE = 50;
   const [copiedText, setCopiedText] = useState(false);
 
   const analytics = useMemo(() => {
     const cases: EvaluatedCaseRow[] = [];
     const seenMails = new Set<string>();
     const seenImages = new Set<string>();
+    const resolvedModel = activeModel !== undefined ? activeModel : loadUserTrainedModel(currentUserUid);
+    const vocabCache = prepareModelVocabCache(resolvedModel);
 
     let mailCorrect = 0;
     let mailTotal = 0;
@@ -84,7 +90,7 @@ export default function PerformanceMetrics({
       seenMails.add(key);
 
       const headers = rawHeaders || `From: ${sender}\nDKIM: Pass\nSPF: Pass`;
-      const res = analyzeEmailWithModel(subject, body, headers, sender);
+      const res = analyzeEmailWithModel(subject, body, headers, sender, resolvedModel, vocabCache);
       const predThreat = res.metrics.spamScore >= 50 || res.metrics.phishingLikelihood >= 55;
       const predictedLabel: EmailLabel = res.modelPrediction
         ? res.modelPrediction.predictedLabel
@@ -363,16 +369,26 @@ export default function PerformanceMetrics({
     });
   }, [analytics.cases, tableFilter]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredCases.length / PAGE_SIZE));
+  const safePage = Math.min(tablePage, totalPages);
+  const paginatedCases = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filteredCases.slice(start, start + PAGE_SIZE);
+  }, [filteredCases, safePage]);
+
   const handleCopyTableAsText = async () => {
+    const maxCopyRows = 5000;
+    const rowsToCopy = filteredCases.slice(0, maxCopyRows);
     const headerLines = [
       `NeoAegis Accuracy & Confusion Matrix Report`,
       `Overall Accuracy: ${analytics.overallAccuracyPct.toFixed(1)}% (${analytics.totalCorrect}/${analytics.totalAssessments})`,
       `Precision: ${analytics.macroPrecision.toFixed(1)}% | Recall: ${analytics.macroRecall.toFixed(1)}% | F1: ${analytics.macroF1.toFixed(1)}% | ROC AUC: ${analytics.rocAUC.toFixed(3)}`,
       `Binary Matrix -> TP: ${analytics.tp}, FP: ${analytics.fp}, TN: ${analytics.tn}, FN: ${analytics.fn}`,
+      filteredCases.length > maxCopyRows ? `(Note: Showing first ${maxCopyRows.toLocaleString()} of ${filteredCases.length.toLocaleString()} rows)` : '',
       `---`,
       `#\tType\tTitle\tActual\tPredicted\tThreatScore\tVerdict`
-    ];
-    const rowLines = filteredCases.map((c, idx) =>
+    ].filter(Boolean);
+    const rowLines = rowsToCopy.map((c, idx) =>
       `${idx + 1}\t${c.sourceType}\t${c.title}\t${c.actual}\t${c.predicted}\t${c.threatScore}%\t${c.correct ? 'CORRECT' : 'MISMATCH'}`
     );
     const fullText = [...headerLines, ...rowLines].join('\n');
@@ -715,7 +731,10 @@ export default function PerformanceMetrics({
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setTableFilter(tab.id)}
+                  onClick={() => {
+                    setTableFilter(tab.id);
+                    setTablePage(1);
+                  }}
                   className={`px-3 py-1 rounded-full text-xs font-medium transition cursor-pointer ${
                     tableFilter === tab.id
                       ? 'bg-indigo-600 text-white'
@@ -758,9 +777,11 @@ export default function PerformanceMetrics({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {filteredCases.map((row, idx) => (
-                  <tr key={`${row.sourceType}-${row.id}-${idx}`} className="hover:bg-slate-50">
-                    <td className="p-3 font-mono text-slate-500">{idx + 1}</td>
+                {paginatedCases.map((row, idx) => {
+                  const rowNum = (safePage - 1) * PAGE_SIZE + idx + 1;
+                  return (
+                  <tr key={`${row.sourceType}-${row.id}-${rowNum}`} className="hover:bg-slate-50">
+                    <td className="p-3 font-mono text-slate-500">{rowNum}</td>
                     <td className="p-3">
                       <span
                         className={`px-2 py-0.5 rounded text-[11px] font-medium ${
@@ -790,9 +811,41 @@ export default function PerformanceMetrics({
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {filteredCases.length > PAGE_SIZE && (
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs text-slate-600 tabular-nums">
+            <span>
+              Showing <strong>{((safePage - 1) * PAGE_SIZE + 1).toLocaleString()}</strong>–
+              <strong>{Math.min(safePage * PAGE_SIZE, filteredCases.length).toLocaleString()}</strong> of{' '}
+              <strong>{filteredCases.length.toLocaleString()}</strong> rows
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setTablePage(p => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="px-3 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 border border-slate-200 rounded-full font-medium cursor-pointer"
+              >
+                Prev
+              </button>
+              <span className="px-2 font-mono">
+                Page <strong>{safePage}</strong> / {totalPages.toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setTablePage(p => Math.min(totalPages, p + 1))}
+                disabled={safePage >= totalPages}
+                className="px-3 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 border border-slate-200 rounded-full font-medium cursor-pointer"
+              >
+                Next
+              </button>
+            </div>
           </div>
         )}
       </div>

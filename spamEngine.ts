@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { SpamMetrics, LocalPredictionResult } from './types';
+import { SpamMetrics, LocalPredictionResult, TrainedModelArtifact } from './types';
 import { loadUserTrainedModel, predictWithModel } from './src/lib/localMlEngine';
 
 // Large static lists of rules & weights
@@ -34,10 +34,11 @@ const SPAM_KEYWORDS_AUTHORITY = [
 // Helper to calculate Shannon Entropy (randomness of characters to bypass spam filters)
 function calculateEntropy(str: string): number {
   if (!str) return 0;
-  const len = str.length;
+  const sample = str.length > 2500 ? str.slice(0, 2500) : str;
+  const len = sample.length;
   const frequencies: { [key: string]: number } = {};
   for (let i = 0; i < len; i++) {
-    const c = str[i];
+    const c = sample[i];
     frequencies[c] = (frequencies[c] || 0) + 1;
   }
   let entropy = 0;
@@ -55,9 +56,13 @@ export function analyzeEmailWithModel(
   subject: string,
   body: string,
   headers: string,
-  senderOverride?: string
+  senderOverride?: string,
+  modelOverride?: TrainedModelArtifact | null,
+  vocabCacheOverride?: Map<string, number>
 ): { metrics: SpamMetrics; modelPrediction: LocalPredictionResult | null } {
-  const combinedText = `${subject} ${body}`.toLowerCase();
+  const safeBody = body && body.length > 4000 ? body.slice(0, 4000) : (body || '');
+  const safeHeaders = headers && headers.length > 2500 ? headers.slice(0, 2500) : (headers || '');
+  const combinedText = `${subject} ${safeBody}`.toLowerCase();
   
   // 1. Keyword Trigger Metrics
   let finCount = 0;
@@ -82,7 +87,7 @@ export function analyzeEmailWithModel(
   // 2. Link & Domain Metrics
   // Match URLs
   const urlRegex = /(https?:\/\/[^\s]+)/gi;
-  const links = body.match(urlRegex) || [];
+  const links = (safeBody.match(urlRegex) || []).slice(0, 12);
   const suspiciousLinkCount = links.filter(l => {
     const low = l.toLowerCase();
     return low.includes('verify') || low.includes('secure-') || low.includes('bit.ly') || low.includes('tinyurl') || low.includes('login') || low.includes('pay-');
@@ -94,8 +99,8 @@ export function analyzeEmailWithModel(
 
   // Header mismatched domains mock check
   let mismatchedDomainsCount = 0;
-  if (/from:.*<(.*)>/i.test(headers)) {
-    const fromDomain = headers.match(/from:.*@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i)?.[1] || '';
+  if (/from:.*<(.*)>/i.test(safeHeaders)) {
+    const fromDomain = safeHeaders.match(/from:.*@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i)?.[1] || '';
     const linkDomains = links.map(l => {
       try {
         const u = new URL(l);
@@ -246,7 +251,7 @@ export function analyzeEmailWithModel(
     senderOverride ||
     headers.match(/from:.*?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i)?.[1] ||
     '';
-  const activeModel = loadUserTrainedModel();
+  const activeModel = modelOverride !== undefined ? modelOverride : loadUserTrainedModel();
   const hasTrainedTextUnit = Boolean(
     activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0)
   );
@@ -256,7 +261,7 @@ export function analyzeEmailWithModel(
   let phishingLikelihood = Math.min(99, Math.max(1, basePhishingLikelihood));
 
   if (activeModel && hasTrainedTextUnit) {
-    modelPrediction = predictWithModel(subject, body, senderFromHeader, headers, activeModel);
+    modelPrediction = predictWithModel(subject, safeBody, senderFromHeader, safeHeaders, activeModel, vocabCacheOverride);
     spamScore = modelPrediction.spamScore;
     phishingLikelihood = modelPrediction.phishingLikelihood;
   }

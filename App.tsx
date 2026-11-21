@@ -27,6 +27,7 @@ import {
   fetchUserDatasetEmails,
   getFirebaseIdTokenSafely,
   saveEmailToEnclaveProfile,
+  saveEnclaveEmailsBatch,
   saveUserDatasetEmailsBatch,
   getUserPortalStats,
   incrementUserEmailsParsed,
@@ -40,6 +41,7 @@ import {
   contributeImagesToBackend,
   fetchCollectiveModelFromBackend,
   fetchUserWorkspaceFromBackend,
+  hydrateUserLargeDatasetsFromIdb,
   loadUserActiveInspectorImage,
   loadUserBatchReportMeta,
   loadUserBatchRows,
@@ -50,6 +52,7 @@ import {
   mergeBatchRowsByKey,
   mergeImagesByKey,
   mergeSamplesByKey,
+  prepareModelVocabCache,
   saveUserActiveInspectorImage,
   saveUserBatchReportMeta,
   saveUserBatchRows,
@@ -137,7 +140,8 @@ export default function App() {
     const stats = getUserPortalStats(uid);
     setWorkingSeconds(stats.workingSeconds);
 
-    // 1. Fetch collective backend model + aggregate stats AND this user's own private backend workspace
+    // 1. Hydrate large local IndexedDB datasets + fetch collective model + backend private workspace
+    await hydrateUserLargeDatasetsFromIdb(uid);
     const idToken = await getFirebaseIdTokenSafely();
     const [{ stats: backendStats }, remoteWorkspace] = await Promise.all([
       fetchCollectiveModelFromBackend(uid, idToken),
@@ -258,10 +262,11 @@ export default function App() {
     }
 
     const { emails: savedEmails, exports: savedExports } = await fetchEnclaveUserData(uid);
+    const vocabCacheForHydrate = prepareModelVocabCache(resolvedModel);
     const reconstructedRecords: EmailRecord[] = savedEmails.map((item: any) => {
       if (item.fullRecord && item.fullRecord.metrics) {
         const rec = item.fullRecord as EmailRecord;
-        const fresh = analyzeEmailWithModel(rec.subject, rec.body, rec.rawHeaders, rec.sender);
+        const fresh = analyzeEmailWithModel(rec.subject, rec.body, rec.rawHeaders, rec.sender, resolvedModel, vocabCacheForHydrate);
         const key = `${String(rec.subject).trim().toLowerCase()}::${String(rec.sender).trim().toLowerCase()}`;
         const inferredTruth = rec.groundTruthLabel || datasetLabelLookup.get(key);
         return {
@@ -274,7 +279,7 @@ export default function App() {
       const fallbackBody = item.body || item.bodySnippet || item.subject || '';
       const senderAddr = item.sender || 'unknown@sender.org';
       const rawHeaders = item.rawHeaders || `From: ${senderAddr}\nReceived: by neoaegis.local; SPF=pass; DKIM=pass`;
-      const analyzed = analyzeEmailWithModel(item.subject || '', fallbackBody, rawHeaders, senderAddr).metrics;
+      const analyzed = analyzeEmailWithModel(item.subject || '', fallbackBody, rawHeaders, senderAddr, resolvedModel, vocabCacheForHydrate).metrics;
       const key = `${String(item.subject || '').trim().toLowerCase()}::${String(senderAddr).trim().toLowerCase()}`;
       const inferredTruth = datasetLabelLookup.get(key);
       return {
@@ -337,25 +342,53 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Re-score vault emails immediately whenever user trains, imports, or switches local/collective ML weights
+  // Re-score vault emails cleanly (cooperative chunks if > 500 emails so UI stays at 60fps)
   const handleModelUpdated = (nextModel: TrainedModelArtifact | null) => {
     setActiveModel(nextModel);
     setModelVersion(v => v + 1);
+    const vocabCache = prepareModelVocabCache(nextModel);
 
     setEmails(prev => {
-      const updated = prev.map(mail => {
-        const reMetrics = analyzeEmailWithModel(mail.subject, mail.body, mail.rawHeaders, mail.sender).metrics;
-        return {
-          ...mail,
-          isSpam: reMetrics.spamScore > 50 || reMetrics.phishingLikelihood > 45,
-          metrics: reMetrics
-        };
-      });
-      setSelectedEmail(curr => {
-        if (!curr) return updated[0] || null;
-        return updated.find(u => u.id === curr.id) || updated[0] || null;
-      });
-      return updated;
+      if (prev.length === 0) return prev;
+      if (prev.length <= 600) {
+        const updated = prev.map(mail => {
+          const reMetrics = analyzeEmailWithModel(mail.subject, mail.body, mail.rawHeaders, mail.sender, nextModel, vocabCache).metrics;
+          return {
+            ...mail,
+            isSpam: reMetrics.spamScore > 50 || reMetrics.phishingLikelihood > 45,
+            metrics: reMetrics
+          };
+        });
+        setSelectedEmail(curr => {
+          if (!curr) return updated[0] || null;
+          return updated.find(u => u.id === curr.id) || updated[0] || null;
+        });
+        return updated;
+      }
+
+      const snapshot = prev;
+      setTimeout(async () => {
+        const updated: EmailRecord[] = new Array(snapshot.length);
+        const CHUNK = 1200;
+        for (let i = 0; i < snapshot.length; i++) {
+          const mail = snapshot[i];
+          const reMetrics = analyzeEmailWithModel(mail.subject, mail.body, mail.rawHeaders, mail.sender, nextModel, vocabCache).metrics;
+          updated[i] = {
+            ...mail,
+            isSpam: reMetrics.spamScore > 50 || reMetrics.phishingLikelihood > 45,
+            metrics: reMetrics
+          };
+          if (i > 0 && i % CHUNK === 0) {
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+        setEmails(updated);
+        setSelectedEmail(curr => {
+          if (!curr) return updated[0] || null;
+          return updated.find(u => u.id === curr.id) || updated[0] || null;
+        });
+      }, 0);
+      return prev;
     });
   };
 
@@ -472,11 +505,12 @@ export default function App() {
     setMobileMenuOpen(false);
   };
 
-  // Add dynamically parsed email from batch uploads and persist strictly to current user's profile
+  // Add dynamically parsed emails from batch uploads using O(N) Set dedup + batched persistence (no 50k Firestore loop!)
   const handleAddNewEmails = async (newRecords: EmailRecord[]) => {
     if (newRecords.length === 0) return;
     setEmails(prev => {
-      const filtered = prev.filter(p => !newRecords.some(nr => nr.subject === p.subject && nr.sender === p.sender));
+      const newKeys = new Set(newRecords.map(nr => `${nr.subject}::${nr.sender}`));
+      const filtered = prev.filter(p => !newKeys.has(`${p.subject}::${p.sender}`));
       return [...newRecords, ...filtered];
     });
     setSelectedEmail(newRecords[0]);
@@ -484,20 +518,25 @@ export default function App() {
     if (currentUser) {
       const updatedStats = incrementUserEmailsParsed(currentUser.uid, newRecords.length);
       setEmailsParsedCount(updatedStats.emailsParsedCount);
-      for (const rec of newRecords) {
-        await saveEmailToEnclaveProfile(currentUser.uid, rec);
-      }
-      await syncUserIsolatedVault(currentUser.uid);
+      await saveEnclaveEmailsBatch(currentUser.uid, newRecords);
+      setSavedDataCount(prev => Math.max(prev, newRecords.length));
+      setVaultSyncTick(t => t + 1);
     }
   };
 
-  // Sync confirmed CSV dataset rows from Trainer into both Personal Audit Vault & Batch CSV Auditor
+  // Sync confirmed CSV dataset rows from Trainer into both Personal Audit Vault & Batch CSV Auditor (chunk-safe for 50k rows)
   const handleArchiveTrainerCsvEmails = async (samples: TrainingSample[]) => {
     if (!currentUser || samples.length === 0) return;
 
-    const evaluatedRecords: EmailRecord[] = samples.map((s, idx) => {
+    const modelForEval = activeModel || loadUserTrainedModel(currentUser.uid);
+    const vocabCache = prepareModelVocabCache(modelForEval);
+    const evaluatedRecords: EmailRecord[] = new Array(samples.length);
+    const CHUNK = 1200;
+
+    for (let idx = 0; idx < samples.length; idx++) {
+      const s = samples[idx];
       const headers = s.rawHeaders || `From: ${s.sender}\nDKIM: Pass\nSPF: Pass`;
-      const res = analyzeEmailWithModel(s.subject, s.body, headers, s.sender);
+      const res = analyzeEmailWithModel(s.subject, s.body, headers, s.sender, modelForEval, vocabCache);
       const tierInfo = classifyGranularEmailTier(
         s.subject,
         s.body,
@@ -507,7 +546,7 @@ export default function App() {
         res.metrics.spamScore,
         res.metrics.phishingLikelihood
       );
-      return {
+      evaluatedRecords[idx] = {
         id: s.id || `trncsv-${Date.now()}-${idx}`,
         subject: s.subject,
         sender: s.sender,
@@ -520,9 +559,11 @@ export default function App() {
         granularTier: s.granularTier || tierInfo.granularTier,
         metrics: res.metrics
       };
-    });
+      if (idx > 0 && idx % CHUNK === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
 
-    // Append into persisted Batch CSV Auditor rows FIRST so syncUserIsolatedVault merges cleanly
     const existingBatch = loadUserBatchRows(currentUser.uid) || [];
     const existingKeys = new Set(existingBatch.map((b: any) => `${String(b.subject).toLowerCase()}::${String(b.sender).toLowerCase()}`));
     const newBatchRows = evaluatedRecords
@@ -1532,7 +1573,7 @@ export default function App() {
               </div>
             ) : (
               <div className="space-y-2">
-                {emails.map(mail => {
+                {emails.slice(0, 60).map(mail => {
                   const isActive = selectedEmail?.id === mail.id;
                   
                   return (
@@ -1574,6 +1615,11 @@ export default function App() {
                     </div>
                   );
                 })}
+                {emails.length > 60 && (
+                  <p className="text-[11px] text-center text-[#5f6368] pt-2 tabular-nums">
+                    Showing latest 60 of {emails.length.toLocaleString()} messages. Use Batch CSV Auditor pagination to browse all rows.
+                  </p>
+                )}
               </div>
             )}
 

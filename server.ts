@@ -169,14 +169,37 @@ function readUserWorkspace(uid: string): UserWorkspacePayload {
   }
 }
 
-function writeUserWorkspace(uid: string, patch: UserWorkspacePayload): UserWorkspacePayload {
+function writeUserWorkspace(
+  uid: string,
+  patch: UserWorkspacePayload & { appendMode?: 'replace_start' | 'append' }
+): UserWorkspacePayload {
   const filePath = getUserWorkspacePath(uid);
   const current = readUserWorkspace(uid);
+  const isAppend = patch.appendMode === 'append';
+
+  const nextBatchRows =
+    patch.batchRows !== undefined
+      ? Array.isArray(patch.batchRows)
+        ? isAppend && Array.isArray(current.batchRows)
+          ? [...current.batchRows, ...patch.batchRows]
+          : patch.batchRows
+        : []
+      : undefined;
+
+  const nextTrainerSamples =
+    patch.trainerSamples !== undefined
+      ? Array.isArray(patch.trainerSamples)
+        ? isAppend && Array.isArray(current.trainerSamples)
+          ? [...current.trainerSamples, ...patch.trainerSamples]
+          : patch.trainerSamples
+        : []
+      : undefined;
+
   const next: UserWorkspacePayload = {
     ...current,
-    ...(patch.batchRows !== undefined ? { batchRows: Array.isArray(patch.batchRows) ? patch.batchRows : [] } : {}),
+    ...(nextBatchRows !== undefined ? { batchRows: nextBatchRows } : {}),
     ...(patch.batchMeta !== undefined ? { batchMeta: patch.batchMeta } : {}),
-    ...(patch.trainerSamples !== undefined ? { trainerSamples: Array.isArray(patch.trainerSamples) ? patch.trainerSamples : [] } : {}),
+    ...(nextTrainerSamples !== undefined ? { trainerSamples: nextTrainerSamples } : {}),
     ...(patch.trainerImages !== undefined ? { trainerImages: Array.isArray(patch.trainerImages) ? patch.trainerImages : [] } : {}),
     ...(patch.imageAssessments !== undefined ? { imageAssessments: Array.isArray(patch.imageAssessments) ? patch.imageAssessments : [] } : {}),
     ...(patch.vaultEmails !== undefined ? { vaultEmails: Array.isArray(patch.vaultEmails) ? patch.vaultEmails : [] } : {}),
@@ -209,7 +232,8 @@ function readCombinedCorpus(): BackendCorpusEntry[] {
 function writeCombinedCorpus(entries: BackendCorpusEntry[]): void {
   ensureDataDir();
   const tmpPath = `${CORPUS_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(entries, null, 2), 'utf-8');
+  const serialized = entries.length > 500 ? JSON.stringify(entries) : JSON.stringify(entries, null, 2);
+  fs.writeFileSync(tmpPath, serialized, 'utf-8');
   fs.renameSync(tmpPath, CORPUS_PATH);
 }
 
@@ -381,7 +405,7 @@ function requireAuthorizedUid(req: Request, res: Response, next: NextFunction) {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '25mb' }));
+  app.use(express.json({ limit: '80mb' }));
 
   // Health endpoint (non-sensitive)
   app.get('/api/health', (_req: Request, res: Response) => {
@@ -410,7 +434,8 @@ async function startServer() {
         trainerImages: body.trainerImages,
         imageAssessments: body.imageAssessments,
         vaultEmails: body.vaultEmails,
-        activeInspectorImage: body.activeInspectorImage
+        activeInspectorImage: body.activeInspectorImage,
+        appendMode: body.appendMode
       });
       res.json({ ok: true, updatedAt: updated.updatedAt });
     } catch (err: any) {
@@ -514,8 +539,8 @@ async function startServer() {
         res.status(400).json({ error: 'Request must include a non-empty samples array.' });
         return;
       }
-      if (rawSamples.length > 2000) {
-        res.status(400).json({ error: 'Batch contribution exceeds 2000 records per request.' });
+      if (rawSamples.length > 5000) {
+        res.status(400).json({ error: 'Batch contribution exceeds 5000 records per request.' });
         return;
       }
 

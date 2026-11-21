@@ -19,12 +19,15 @@ import {
   normalizeEmailLabel,
   classifyGranularEmailTier,
   parseDatasetFileContent,
+  parseDatasetFileContentAsync,
+  prepareModelVocabCache,
   predictWithModel,
   trainClassifierCore,
   sanitizeCollectiveModelArtifact,
   TrainingHyperparams
 } from './mlCore';
 import { sanitizeCollectiveImageModelArtifact } from './imageVisionEngine';
+import { idbGet, idbSet, idbDelete } from './indexedDbStore';
 
 export {
   ENGINEERED_FEATURE_NAMES,
@@ -34,6 +37,8 @@ export {
   normalizeEmailLabel,
   classifyGranularEmailTier,
   parseDatasetFileContent,
+  parseDatasetFileContentAsync,
+  prepareModelVocabCache,
   predictWithModel,
   sanitizeCollectiveModelArtifact,
   sanitizeCollectiveImageModelArtifact
@@ -64,6 +69,9 @@ const COLLECTIVE_STATS_CACHE_KEY = 'neoaegis_collective_stats_cache_v1';
 let activeMlUserUid: string | null = null;
 let inMemoryCollectiveModel: TrainedModelArtifact | null = null;
 let inMemoryCollectiveImageUnit: TrainedImageModelArtifact | null = null;
+const inMemoryTrainerSamplesByUid = new Map<string, TrainingSample[]>();
+const inMemoryBatchRowsByUid = new Map<string, any[]>();
+const MAX_LOCALSTORAGE_SNAPSHOT = 250;
 
 export function setActiveMlUserUid(uid: string | null): void {
   activeMlUserUid = uid;
@@ -323,23 +331,44 @@ export function clearUserTrainedModel(uid: string): void {
 
 export function loadUserTrainerSamples(uid?: string | null): TrainingSample[] {
   const targetUid = uid !== undefined ? uid : activeMlUserUid;
-  if (!targetUid || typeof window === 'undefined') return [];
+  if (!targetUid) return [];
+  const cached = inMemoryTrainerSamplesByUid.get(targetUid);
+  if (cached) return cached;
+  if (typeof window === 'undefined') return [];
   try {
     const raw = window.localStorage.getItem(`neoaegis_trainer_text_${targetUid}`);
     if (raw === null) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const list = Array.isArray(parsed) ? parsed : [];
+    inMemoryTrainerSamplesByUid.set(targetUid, list);
+    return list;
   } catch {
     return [];
   }
 }
 
 export function saveUserTrainerSamples(uid: string, samples: TrainingSample[]): void {
-  if (!uid || typeof window === 'undefined') return;
+  if (!uid) return;
+  inMemoryTrainerSamplesByUid.set(uid, samples);
+  if (typeof window === 'undefined') return;
+
+  // Persist complete dataset (including 50,000+ rows) asynchronously in IndexedDB so main thread never blocks
+  if (samples.length === 0) {
+    void idbDelete(`trainer_text_${uid}`);
+  } else {
+    void idbSet(`trainer_text_${uid}`, samples);
+  }
+
+  // Keep only compact snapshot in localStorage to avoid 5MB QuotaExceededError and synchronous JSON lag
   try {
-    window.localStorage.setItem(`neoaegis_trainer_text_${uid}`, JSON.stringify(samples));
-  } catch (err) {
-    console.warn('Unable to persist trainer text dataset:', err);
+    const snapshot = samples.length > MAX_LOCALSTORAGE_SNAPSHOT ? samples.slice(0, MAX_LOCALSTORAGE_SNAPSHOT) : samples;
+    window.localStorage.setItem(`neoaegis_trainer_text_${uid}`, JSON.stringify(snapshot));
+  } catch {
+    try {
+      window.localStorage.setItem(`neoaegis_trainer_text_${uid}`, JSON.stringify(samples.slice(0, 50)));
+    } catch {
+      // IndexedDB retains the full dataset
+    }
   }
 }
 
@@ -457,23 +486,60 @@ export function saveUserActiveInspectorImage(uid: string, state: PersistedInspec
 
 export function loadUserBatchRows(uid?: string | null): any[] {
   const targetUid = uid !== undefined ? uid : activeMlUserUid;
-  if (!targetUid || typeof window === 'undefined') return [];
+  if (!targetUid) return [];
+  const cached = inMemoryBatchRowsByUid.get(targetUid);
+  if (cached) return cached;
+  if (typeof window === 'undefined') return [];
   try {
     const raw = window.localStorage.getItem(`neoaegis_batch_csv_${targetUid}`);
     if (raw === null) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const list = Array.isArray(parsed) ? parsed : [];
+    inMemoryBatchRowsByUid.set(targetUid, list);
+    return list;
   } catch {
     return [];
   }
 }
 
 export function saveUserBatchRows(uid: string, rows: any[]): void {
-  if (!uid || typeof window === 'undefined') return;
+  if (!uid) return;
+  inMemoryBatchRowsByUid.set(uid, rows);
+  if (typeof window === 'undefined') return;
+
+  // Persist complete batch dataset (50,000+ rows) asynchronously in IndexedDB
+  if (rows.length === 0) {
+    void idbDelete(`batch_csv_${uid}`);
+  } else {
+    void idbSet(`batch_csv_${uid}`, rows);
+  }
+
+  // Store compact recent snapshot in localStorage (zero quota crash / zero synchronous lag)
   try {
-    window.localStorage.setItem(`neoaegis_batch_csv_${uid}`, JSON.stringify(rows));
-  } catch (err) {
-    console.warn('Unable to persist batch CSV rows:', err);
+    const snapshot = rows.length > MAX_LOCALSTORAGE_SNAPSHOT ? rows.slice(0, MAX_LOCALSTORAGE_SNAPSHOT) : rows;
+    window.localStorage.setItem(`neoaegis_batch_csv_${uid}`, JSON.stringify(snapshot));
+  } catch {
+    try {
+      window.localStorage.setItem(`neoaegis_batch_csv_${uid}`, JSON.stringify(rows.slice(0, 50)));
+    } catch {
+      // IndexedDB retains the full dataset
+    }
+  }
+}
+
+export async function hydrateUserLargeDatasetsFromIdb(uid: string): Promise<void> {
+  if (!uid || typeof window === 'undefined') return;
+  const [idbTrainer, idbBatch] = await Promise.all([
+    idbGet<TrainingSample[]>(`trainer_text_${uid}`),
+    idbGet<any[]>(`batch_csv_${uid}`)
+  ]);
+  if (Array.isArray(idbTrainer) && idbTrainer.length > 0) {
+    const mergedTrainer = mergeSamplesByKey(loadUserTrainerSamples(uid), idbTrainer);
+    inMemoryTrainerSamplesByUid.set(uid, mergedTrainer);
+  }
+  if (Array.isArray(idbBatch) && idbBatch.length > 0) {
+    const mergedBatch = mergeBatchRowsByKey(loadUserBatchRows(uid), idbBatch);
+    inMemoryBatchRowsByUid.set(uid, mergedBatch);
   }
 }
 
@@ -724,7 +790,8 @@ export async function contributeSamplesToBackend(
   idToken: string | null,
   samples: TrainingSample[],
   hyperparameters?: Partial<TrainingHyperparams>,
-  autoTrain = true
+  autoTrain = true,
+  onChunkProgress?: (uploadedCount: number, totalCount: number) => void
 ): Promise<{
   ok: boolean;
   insertedCount: number;
@@ -741,53 +808,71 @@ export async function contributeSamplesToBackend(
       stats: loadCollectiveStatsCache()
     };
   }
+  const CHUNK_SIZE = 2000;
+  let totalInserted = 0;
+  let totalUpdated = 0;
+  let latestModel: TrainedModelArtifact | null = loadCollectiveBackendModelCache();
+  let latestStats: CollectiveBackendStats | null = loadCollectiveStatsCache();
+
   try {
-    const res = await fetch('/api/dataset/contribute', {
-      method: 'POST',
-      headers: buildBackendHeaders(uid, idToken),
-      body: JSON.stringify({
-        samples: samples.map(s => ({
-          subject: s.subject,
-          body: s.body,
-          sender: s.sender,
-          rawHeaders: s.rawHeaders,
-          label: s.label,
-          granularTier: s.granularTier
-        })),
-        hyperparameters,
-        autoTrain
-      })
-    });
-    if (!res.ok) {
-      return {
-        ok: false,
-        insertedCount: 0,
-        updatedCount: 0,
-        model: loadCollectiveBackendModelCache(),
-        stats: loadCollectiveStatsCache()
-      };
+    for (let offset = 0; offset < samples.length; offset += CHUNK_SIZE) {
+      const slice = samples.slice(offset, offset + CHUNK_SIZE);
+      const isFinalChunk = offset + CHUNK_SIZE >= samples.length;
+
+      const res = await fetch('/api/dataset/contribute', {
+        method: 'POST',
+        headers: buildBackendHeaders(uid, idToken),
+        body: JSON.stringify({
+          samples: slice.map(s => ({
+            subject: s.subject,
+            body: s.body,
+            sender: s.sender,
+            rawHeaders: s.rawHeaders,
+            label: s.label,
+            granularTier: s.granularTier
+          })),
+          hyperparameters,
+          autoTrain: isFinalChunk ? autoTrain : false
+        })
+      });
+
+      if (!res.ok) {
+        return {
+          ok: totalInserted > 0 || totalUpdated > 0,
+          insertedCount: totalInserted,
+          updatedCount: totalUpdated,
+          model: latestModel,
+          stats: latestStats
+        };
+      }
+
+      const data = await res.json();
+      totalInserted += Number(data?.insertedCount) || 0;
+      totalUpdated += Number(data?.updatedCount) || 0;
+      if (data?.model) latestModel = sanitizeCollectiveModelArtifact(data.model);
+      if (data?.stats) latestStats = data.stats;
+
+      const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : undefined;
+      if (isFinalChunk && (latestModel || latestStats || imageUnit)) {
+        saveCollectiveBackendModelCache(latestModel, latestStats, imageUnit);
+      }
+      onChunkProgress?.(Math.min(samples.length, offset + slice.length), samples.length);
     }
-    const data = await res.json();
-    const model = data?.model ? sanitizeCollectiveModelArtifact(data.model) : null;
-    const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : undefined;
-    const stats = data?.stats || null;
-    if (model || stats || imageUnit) {
-      saveCollectiveBackendModelCache(model, stats, imageUnit);
-    }
+
     return {
       ok: true,
-      insertedCount: Number(data?.insertedCount) || 0,
-      updatedCount: Number(data?.updatedCount) || 0,
-      model,
-      stats
+      insertedCount: totalInserted,
+      updatedCount: totalUpdated,
+      model: latestModel,
+      stats: latestStats
     };
   } catch {
     return {
       ok: false,
-      insertedCount: 0,
-      updatedCount: 0,
-      model: loadCollectiveBackendModelCache(),
-      stats: loadCollectiveStatsCache()
+      insertedCount: totalInserted,
+      updatedCount: totalUpdated,
+      model: latestModel,
+      stats: latestStats
     };
   }
 }
@@ -900,12 +985,64 @@ export async function syncUserWorkspaceToBackend(
 ): Promise<boolean> {
   if (!uid) return false;
   try {
-    const res = await fetch('/api/user/workspace', {
-      method: 'POST',
-      headers: buildBackendHeaders(uid, idToken),
-      body: JSON.stringify(patch)
-    });
-    return res.ok;
+    const CHUNK_LIMIT = 2500;
+    const hasLargeBatch = Array.isArray(patch.batchRows) && patch.batchRows.length > CHUNK_LIMIT;
+    const hasLargeTrainer = Array.isArray(patch.trainerSamples) && patch.trainerSamples.length > CHUNK_LIMIT;
+
+    if (!hasLargeBatch && !hasLargeTrainer) {
+      const res = await fetch('/api/user/workspace', {
+        method: 'POST',
+        headers: buildBackendHeaders(uid, idToken),
+        body: JSON.stringify(patch)
+      });
+      return res.ok;
+    }
+
+    // Send scalar/small fields first
+    const basePatch: RemoteUserWorkspace = {
+      ...(patch.batchMeta !== undefined ? { batchMeta: patch.batchMeta } : {}),
+      ...(patch.trainerImages !== undefined ? { trainerImages: patch.trainerImages } : {}),
+      ...(patch.imageAssessments !== undefined ? { imageAssessments: patch.imageAssessments } : {}),
+      ...(patch.vaultEmails !== undefined ? { vaultEmails: patch.vaultEmails } : {}),
+      ...(patch.activeInspectorImage !== undefined ? { activeInspectorImage: patch.activeInspectorImage } : {})
+    };
+    if (Object.keys(basePatch).length > 0) {
+      await fetch('/api/user/workspace', {
+        method: 'POST',
+        headers: buildBackendHeaders(uid, idToken),
+        body: JSON.stringify(basePatch)
+      });
+    }
+
+    if (patch.batchRows) {
+      for (let i = 0; i < patch.batchRows.length; i += CHUNK_LIMIT) {
+        const res = await fetch('/api/user/workspace', {
+          method: 'POST',
+          headers: buildBackendHeaders(uid, idToken),
+          body: JSON.stringify({
+            batchRows: patch.batchRows.slice(i, i + CHUNK_LIMIT),
+            appendMode: i === 0 ? 'replace_start' : 'append'
+          })
+        });
+        if (!res.ok) return false;
+      }
+    }
+
+    if (patch.trainerSamples) {
+      for (let i = 0; i < patch.trainerSamples.length; i += CHUNK_LIMIT) {
+        const res = await fetch('/api/user/workspace', {
+          method: 'POST',
+          headers: buildBackendHeaders(uid, idToken),
+          body: JSON.stringify({
+            trainerSamples: patch.trainerSamples.slice(i, i + CHUNK_LIMIT),
+            appendMode: i === 0 ? 'replace_start' : 'append'
+          })
+        });
+        if (!res.ok) return false;
+      }
+    }
+
+    return true;
   } catch {
     return false;
   }

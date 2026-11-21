@@ -30,7 +30,8 @@ import {
   loadUserBatchRows,
   loadUserTrainedModel,
   mergeBatchRowsByKey,
-  parseDatasetFileContent,
+  parseDatasetFileContentAsync,
+  prepareModelVocabCache,
   saveUserBatchReportMeta,
   saveUserBatchRows,
   syncUserWorkspaceToBackend
@@ -81,19 +82,23 @@ const TIER_ORDER: GranularThreatTier[] = [
   'highly_phishing'
 ];
 
-function evaluateBatchRow(raw: {
-  id: string;
-  subject: string;
-  sender: string;
-  body: string;
-  rawHeaders?: string;
-  actualLabel?: EmailLabel;
-  actual?: 'spam' | 'ham';
-  granularTier?: GranularThreatTier;
-  source?: 'csv_upload' | 'trainer_sync' | string;
-}): PersistedBatchRow {
+function evaluateBatchRow(
+  raw: {
+    id: string;
+    subject: string;
+    sender: string;
+    body: string;
+    rawHeaders?: string;
+    actualLabel?: EmailLabel;
+    actual?: 'spam' | 'ham';
+    granularTier?: GranularThreatTier;
+    source?: 'csv_upload' | 'trainer_sync' | string;
+  },
+  modelOverride?: TrainedModelArtifact | null,
+  vocabCacheOverride?: Map<string, number>
+): PersistedBatchRow {
   const headers = raw.rawHeaders || `From: ${raw.sender}\nDKIM: Pass\nSPF: Pass`;
-  const res = analyzeEmailWithModel(raw.subject, raw.body, headers, raw.sender);
+  const res = analyzeEmailWithModel(raw.subject, raw.body, headers, raw.sender, modelOverride, vocabCacheOverride);
   const actualLabel: EmailLabel =
     raw.actualLabel ||
     (raw.actual === 'ham' ? 'legitimate' : 'spam');
@@ -172,7 +177,9 @@ export default function BatchAnalyzer({
   const buildInitialRows = (uid?: string): PersistedBatchRow[] => {
     const saved = uid ? loadUserBatchRows(uid) : null;
     if (saved && saved.length > 0) {
-      return saved.map(r => evaluateBatchRow(r));
+      const model = activeModel !== undefined ? activeModel : loadUserTrainedModel(uid);
+      const vocabMap = prepareModelVocabCache(model);
+      return saved.map(r => (r.metrics && r.predictedLabel ? r : evaluateBatchRow(r, model, vocabMap)));
     }
     return [];
   };
@@ -183,6 +190,9 @@ export default function BatchAnalyzer({
   );
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [isSyncingUpload, setIsSyncingUpload] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ pct: number; stage: string } | null>(null);
+  const [tablePage, setTablePage] = useState<number>(1);
+  const TABLE_PAGE_SIZE = 50;
 
   // Category report filtering + Each-by-Each inspector state
   const [reportCategoryFilter, setReportCategoryFilter] = useState<'all' | EmailLabel>('all');
@@ -208,6 +218,7 @@ export default function BatchAnalyzer({
       setReportCategoryFilter('all');
       setReportTierFilter('all');
       setInspectorIndex(0);
+      setTablePage(1);
     } else {
       setEmails(prev => {
         const merged = mergeBatchRowsByKey(prev, hydrated);
@@ -220,16 +231,55 @@ export default function BatchAnalyzer({
     }
   }, [currentUserUid, syncTick]);
 
-  // Persist batch rows for current user across tab navigation & reloads
+  // Persist batch rows asynchronously to IndexedDB whenever modified (debounced for 50k+ arrays)
   useEffect(() => {
     if (!currentUserUid) return;
-    saveUserBatchRows(currentUserUid, emails);
+    const timer = setTimeout(() => {
+      saveUserBatchRows(currentUserUid, emails);
+    }, 120);
+    return () => clearTimeout(timer);
   }, [emails, currentUserUid]);
 
-  // Immediately re-score all rows whenever user trains, imports, or collective backend model updates
+  // Cooperative chunked rescore when model updates so 50k rows never freeze UI thread
+  const lastScoredModelSigRef = useRef<string>('');
   useEffect(() => {
-    setEmails(prev => prev.map(r => evaluateBatchRow(r)));
-  }, [modelVersion, activeModel]);
+    const sig = `${modelVersion}:${activeModel?.version || 0}`;
+    if (lastScoredModelSigRef.current === sig) return;
+    lastScoredModelSigRef.current = sig;
+
+    let cancelled = false;
+    const runRescore = async () => {
+      const modelToUse = activeModel !== undefined ? activeModel : loadUserTrainedModel(currentUserUid);
+      const vocabMap = prepareModelVocabCache(modelToUse);
+      setEmails(prev => {
+        if (prev.length === 0) return prev;
+        if (prev.length <= 800) {
+          return prev.map(r => evaluateBatchRow(r, modelToUse, vocabMap));
+        }
+        // For huge 50k datasets, schedule cooperative chunked rescore right after return
+        setTimeout(async () => {
+          const snapshot = prev;
+          const rescored: PersistedBatchRow[] = new Array(snapshot.length);
+          const CHUNK = 1200;
+          for (let i = 0; i < snapshot.length; i++) {
+            if (cancelled) return;
+            rescored[i] = evaluateBatchRow(snapshot[i], modelToUse, vocabMap);
+            if (i > 0 && i % CHUNK === 0) {
+              await new Promise(r => setTimeout(r, 0));
+            }
+          }
+          if (!cancelled) {
+            setEmails(rescored);
+          }
+        }, 0);
+        return prev;
+      });
+    };
+    void runRescore();
+    return () => {
+      cancelled = true;
+    };
+  }, [modelVersion, activeModel, currentUserUid]);
 
   const [sortField, setSortField] = useState<'subject' | 'score' | 'id'>('score');
   const [sortAsc, setSortAsc] = useState(false);
@@ -317,6 +367,17 @@ export default function BatchAnalyzer({
     });
   }, [sortedEmails, filterType]);
 
+  const totalTablePages = Math.max(1, Math.ceil(filteredEmails.length / TABLE_PAGE_SIZE));
+  const safeTablePage = Math.min(tablePage, totalTablePages);
+  const paginatedEmails = useMemo(() => {
+    const start = (safeTablePage - 1) * TABLE_PAGE_SIZE;
+    return filteredEmails.slice(start, start + TABLE_PAGE_SIZE);
+  }, [filteredEmails, safeTablePage]);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [filterType, sortField, sortAsc]);
+
   // Real ROC curve evaluated across thresholds 100..0 using actual continuous scores
   const rocCurvePoints = useMemo(() => {
     if (emails.length === 0) {
@@ -325,65 +386,73 @@ export default function BatchAnalyzer({
         { fpr: 100, tpr: 100 }
       ];
     }
-    const posTotal = emails.filter(e => e.actual === 'spam').length || 1;
-    const negTotal = emails.filter(e => e.actual === 'ham').length || 1;
+    let posTotal = 0;
+    let negTotal = 0;
+    for (let i = 0; i < emails.length; i++) {
+      if (emails[i].actual === 'spam') posTotal++;
+      else negTotal++;
+    }
+    posTotal = posTotal || 1;
+    negTotal = negTotal || 1;
     const thresholds = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 0];
-    const pts = thresholds.map(th => {
-      const tPos = emails.filter(e => e.actual === 'spam' && e.score >= th).length;
-      const fPos = emails.filter(e => e.actual === 'ham' && e.score >= th).length;
-      return {
-        fpr: Number(((fPos / negTotal) * 100).toFixed(1)),
-        tpr: Number(((tPos / posTotal) * 100).toFixed(1))
-      };
-    });
+    const tpCounts = new Array(thresholds.length).fill(0);
+    const fpCounts = new Array(thresholds.length).fill(0);
+    for (let i = 0; i < emails.length; i++) {
+      const e = emails[i];
+      for (let t = 0; t < thresholds.length; t++) {
+        if (e.score >= thresholds[t]) {
+          if (e.actual === 'spam') tpCounts[t]++;
+          else fpCounts[t]++;
+        }
+      }
+    }
+    const pts = thresholds.map((_th, t) => ({
+      fpr: Number(((fpCounts[t] / negTotal) * 100).toFixed(1)),
+      tpr: Number(((tpCounts[t] / posTotal) * 100).toFixed(1))
+    }));
     return pts.sort((a, b) => a.fpr - b.fpr || a.tpr - b.tpr);
   }, [emails]);
 
-  // Dynamic CSV/JSON Upload handler -> Persist to User Vault + Collective Backend ML Engine + Show Report
-  const handleCSVUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Dynamic CSV/JSON Upload handler -> Non-blocking chunked parsing + scoring + IndexedDB & Collective ML Engine
+  const handleCSVUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.target.value = '';
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      setIsSyncingUpload(true);
-      try {
-        const text = String(e.target?.result || '');
-        const parsed = parseDatasetFileContent(text, file.name);
-        if (parsed.length === 0) {
-          setUploadNotice('No valid email rows found in uploaded file. Expected columns: subject, body, sender, label.');
-          setIsSyncingUpload(false);
-          return;
-        }
+    setIsSyncingUpload(true);
+    setUploadNotice(null);
+    setUploadProgress({ pct: 2, stage: `Reading "${file.name}"...` });
 
-        const stamp = Date.now();
-        const trainingSamples: TrainingSample[] = parsed.map((sample, idx) => ({
-          ...sample,
-          id: `csv-${stamp}-${idx}`
-        }));
+    try {
+      const text = await file.text();
+      const parsed = await parseDatasetFileContentAsync(text, file.name, (pct, parsedCount) => {
+        setUploadProgress({
+          pct: Math.max(5, Math.round(pct * 0.4)),
+          stage: `Parsing CSV rows cleanly (${parsedCount.toLocaleString()} parsed)...`
+        });
+      });
 
-        // 1. Contribute anonymized samples to Collective Backend Database & auto-retrain collective model
-        let syncedModel = activeModel || null;
-        let syncedStats: CollectiveBackendStats | null = null;
-        if (currentUserUid) {
-          const idToken = await getFirebaseIdTokenSafely();
-          const backendRes = await contributeSamplesToBackend(
-            currentUserUid,
-            idToken,
-            trainingSamples,
-            undefined,
-            true
-          );
-          if (backendRes.ok) {
-            syncedModel = backendRes.model || loadUserTrainedModel(currentUserUid);
-            syncedStats = backendRes.stats;
-            onCollectiveModelSynced?.(syncedModel, syncedStats);
-          }
-        }
+      if (parsed.length === 0) {
+        setUploadNotice('No valid email rows found in uploaded file. Expected columns: subject, body, sender, label.');
+        return;
+      }
 
-        // 2. Score uploaded batch using the freshly updated trained model
-        const evaluatedBatch: PersistedBatchRow[] = trainingSamples.map((sample) =>
-          evaluateBatchRow({
+      const stamp = Date.now();
+      const trainingSamples: TrainingSample[] = parsed.map((sample, idx) => ({
+        ...sample,
+        id: `csv-${stamp}-${idx}`
+      }));
+
+      // 1. Score all uploaded rows cooperatively on cached model + vocabMap so browser stays smooth at 60fps
+      let scoringModel = activeModel !== undefined ? activeModel : loadUserTrainedModel(currentUserUid);
+      let vocabMap = prepareModelVocabCache(scoringModel);
+      const evaluatedBatch: PersistedBatchRow[] = new Array(trainingSamples.length);
+      const SCORE_CHUNK = 1200;
+
+      for (let i = 0; i < trainingSamples.length; i++) {
+        const sample = trainingSamples[i];
+        evaluatedBatch[i] = evaluateBatchRow(
+          {
             id: sample.id,
             subject: sample.subject,
             sender: sample.sender,
@@ -392,82 +461,128 @@ export default function BatchAnalyzer({
             actualLabel: sample.label,
             granularTier: sample.granularTier,
             source: 'csv_upload'
-          })
+          },
+          scoringModel,
+          vocabMap
         );
-
-        const nextAllRows = mergeBatchRowsByKey(evaluatedBatch, emails);
-        setEmails(nextAllRows);
-
-        const meta = {
-          fileName: file.name,
-          uploadedAt: new Date().toISOString(),
-          totalRows: nextAllRows.length
-        };
-        setBatchMeta(meta);
-        if (currentUserUid) {
-          // Persist synchronously BEFORE firing onAddEmailRecords / syncUserIsolatedVault so rows cannot vanish
-          saveUserBatchRows(currentUserUid, nextAllRows);
-          saveUserBatchReportMeta(currentUserUid, meta);
-          const idToken = await getFirebaseIdTokenSafely();
-          await syncUserWorkspaceToBackend(currentUserUid, idToken, {
-            batchRows: nextAllRows,
-            batchMeta: meta
+        if (i > 0 && i % SCORE_CHUNK === 0) {
+          const pct = 40 + Math.round((i / trainingSamples.length) * 30);
+          setUploadProgress({
+            pct,
+            stage: `Scoring emails (${i.toLocaleString()} / ${trainingSamples.length.toLocaleString()})...`
           });
+          await new Promise(r => setTimeout(r, 0));
         }
-
-        // 3. Persist privately for this user in Firestore (`user_dataset_emails`) + Personal Audit Stream
-        if (currentUserUid) {
-          await saveUserDatasetEmailsBatch(
-            currentUserUid,
-            evaluatedBatch.map(r => ({
-              id: r.id,
-              subject: r.subject,
-              sender: r.sender,
-              body: r.body,
-              rawHeaders: r.rawHeaders || `From: ${r.sender}`,
-              label: r.actualLabel,
-              granularTier: r.granularTier,
-              spamScore: r.score,
-              phishingLikelihood: r.phishingLikelihood,
-              source: 'csv_upload'
-            }))
-          );
-        }
-
-        const updatedRecords: EmailRecord[] = evaluatedBatch.map(pr => ({
-          id: pr.id,
-          subject: pr.subject,
-          sender: pr.sender,
-          recipient: 'sandbox-csv-audit@agency-enterprise.com',
-          body: pr.body,
-          rawHeaders: pr.rawHeaders || `From: ${pr.sender}\nDKIM: Pass\nSPF: Pass`,
-          timestamp: new Date().toISOString(),
-          isSpam: pr.predicted === 'spam',
-          groundTruthLabel: pr.actualLabel,
-          granularTier: pr.granularTier,
-          metrics: pr.metrics
-        }));
-        onAddEmailRecords(updatedRecords);
-
-        setReportCategoryFilter('all');
-        setReportTierFilter('all');
-        setShowEachByEach(true);
-        setInspectorIndex(0);
-
-        const catLeg = evaluatedBatch.filter(x => x.predictedLabel === 'legitimate').length;
-        const catSpam = evaluatedBatch.filter(x => x.predictedLabel === 'spam').length;
-        const catPhish = evaluatedBatch.filter(x => x.predictedLabel === 'phishing').length;
-        setUploadNotice(
-          `Uploaded "${file.name}" (${evaluatedBatch.length} emails): ${catLeg} Legitimate, ${catSpam} Spam, ${catPhish} Phishing. Saved privately to your Vault${syncedStats ? ` & synced to Collective Backend Model (${syncedStats.totalCombinedEmails} combined emails)` : ''}.`
-        );
-      } catch (err: any) {
-        setUploadNotice(err?.message || 'Failed to parse uploaded CSV file.');
-      } finally {
-        setIsSyncingUpload(false);
       }
-    };
-    reader.readAsText(file);
-    event.target.value = '';
+
+      const nextAllRows = mergeBatchRowsByKey(evaluatedBatch, emails);
+      setEmails(nextAllRows);
+      setTablePage(1);
+
+      const meta = {
+        fileName: file.name,
+        uploadedAt: new Date().toISOString(),
+        totalRows: nextAllRows.length
+      };
+      setBatchMeta(meta);
+
+      // 2. Persist immediately to local IndexedDB + chunked Backend Workspace
+      let syncedStats: CollectiveBackendStats | null = null;
+      let syncedModel: TrainedModelArtifact | null = scoringModel || null;
+      if (currentUserUid) {
+        saveUserBatchRows(currentUserUid, nextAllRows);
+        saveUserBatchReportMeta(currentUserUid, meta);
+        const idToken = await getFirebaseIdTokenSafely();
+
+        setUploadProgress({
+          pct: 72,
+          stage: `Syncing ${trainingSamples.length.toLocaleString()} rows in chunks & training collective model...`
+        });
+
+        const backendRes = await contributeSamplesToBackend(
+          currentUserUid,
+          idToken,
+          trainingSamples,
+          undefined,
+          true,
+          (uploaded, totalCount) => {
+            const subPct = 72 + Math.round((uploaded / Math.max(1, totalCount)) * 22);
+            setUploadProgress({
+              pct: Math.min(94, subPct),
+              stage: `Syncing chunk ${uploaded.toLocaleString()} / ${totalCount.toLocaleString()} to backend corpus...`
+            });
+          }
+        );
+
+        await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+          batchRows: nextAllRows,
+          batchMeta: meta
+        });
+
+        await saveUserDatasetEmailsBatch(
+          currentUserUid,
+          evaluatedBatch.slice(0, 250).map(r => ({
+            id: r.id,
+            subject: r.subject,
+            sender: r.sender,
+            body: r.body,
+            rawHeaders: r.rawHeaders || `From: ${r.sender}`,
+            label: r.actualLabel,
+            granularTier: r.granularTier,
+            spamScore: r.score,
+            phishingLikelihood: r.phishingLikelihood,
+            source: 'csv_upload'
+          }))
+        );
+
+        if (backendRes.ok) {
+          syncedModel = backendRes.model || loadUserTrainedModel(currentUserUid);
+          syncedStats = backendRes.stats;
+          onCollectiveModelSynced?.(syncedModel, syncedStats);
+        }
+      }
+
+      setUploadProgress({ pct: 98, stage: 'Updating personal audit vault...' });
+      await new Promise(r => setTimeout(r, 0));
+
+      const updatedRecords: EmailRecord[] = evaluatedBatch.map(pr => ({
+        id: pr.id,
+        subject: pr.subject,
+        sender: pr.sender,
+        recipient: 'sandbox-csv-audit@agency-enterprise.com',
+        body: pr.body,
+        rawHeaders: pr.rawHeaders || `From: ${pr.sender}\nDKIM: Pass\nSPF: Pass`,
+        timestamp: new Date().toISOString(),
+        isSpam: pr.predicted === 'spam',
+        groundTruthLabel: pr.actualLabel,
+        granularTier: pr.granularTier,
+        metrics: pr.metrics
+      }));
+      onAddEmailRecords(updatedRecords);
+
+      setReportCategoryFilter('all');
+      setReportTierFilter('all');
+      setShowEachByEach(true);
+      setInspectorIndex(0);
+
+      let catLeg = 0;
+      let catSpam = 0;
+      let catPhish = 0;
+      for (let i = 0; i < evaluatedBatch.length; i++) {
+        const lbl = evaluatedBatch[i].predictedLabel;
+        if (lbl === 'legitimate') catLeg++;
+        else if (lbl === 'spam') catSpam++;
+        else catPhish++;
+      }
+      setUploadNotice(
+        `Uploaded "${file.name}" (${evaluatedBatch.length.toLocaleString()} emails): ${catLeg.toLocaleString()} Legitimate, ${catSpam.toLocaleString()} Spam, ${catPhish.toLocaleString()} Phishing. Saved privately to your Vault${syncedStats ? ` & synced to Collective Backend Model (${syncedStats.totalCombinedEmails.toLocaleString()} combined emails)` : ''}.`
+      );
+    } catch (err: any) {
+      setUploadNotice(err?.message || 'Failed to parse uploaded CSV file.');
+    } finally {
+      setUploadProgress(null);
+      setIsSyncingUpload(false);
+    }
   };
 
   const handleClearBatch = async () => {
@@ -604,6 +719,21 @@ export default function BatchAnalyzer({
           )}
         </div>
       </div>
+
+      {uploadProgress && (
+        <div className="p-4 bg-white border border-[#1a73e8]/40 rounded-xl space-y-2 shadow-2xs" id="batch-upload-progress">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-medium text-[#1a73e8]">{uploadProgress.stage}</span>
+            <span className="font-mono font-semibold text-[#1a73e8]">{uploadProgress.pct}%</span>
+          </div>
+          <div className="w-full h-2 bg-[#e8f0fe] rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#1a73e8] transition-all duration-150"
+              style={{ width: `${uploadProgress.pct}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {uploadNotice && (
         <div className="p-3 bg-[#e8f0fe] border border-[#aecbfa] rounded-xl text-xs text-[#1967d2] flex items-center justify-between gap-2">
@@ -1095,7 +1225,7 @@ export default function BatchAnalyzer({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#f1f3f4]">
-                  {filteredEmails.map(row => {
+                  {paginatedEmails.map(row => {
                     const isMissed = row.actual === 'spam' && row.predicted === 'ham';
                     const isFalseAlarm = row.actual === 'ham' && row.predicted === 'spam';
                     const isCorrectSpam = row.actual === 'spam' && row.predicted === 'spam';
@@ -1197,6 +1327,62 @@ export default function BatchAnalyzer({
                 </tbody>
               </table>
             </div>
+
+            {filteredEmails.length > TABLE_PAGE_SIZE && (
+              <div className="px-5 py-3 border-t border-[#dadce0] bg-[#f8f9fa] flex flex-wrap items-center justify-between gap-3 text-xs">
+                <span className="text-[#5f6368] tabular-nums">
+                  Showing{' '}
+                  <strong className="text-[#202124]">
+                    {((safeTablePage - 1) * TABLE_PAGE_SIZE + 1).toLocaleString()}
+                  </strong>
+                  {' '}to{' '}
+                  <strong className="text-[#202124]">
+                    {Math.min(safeTablePage * TABLE_PAGE_SIZE, filteredEmails.length).toLocaleString()}
+                  </strong>
+                  {' '}of{' '}
+                  <strong className="text-[#202124]">{filteredEmails.length.toLocaleString()}</strong> rows
+                </span>
+                <div className="flex items-center gap-1.5 tabular-nums">
+                  <button
+                    type="button"
+                    onClick={() => setTablePage(1)}
+                    disabled={safeTablePage <= 1}
+                    className="px-2.5 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                  >
+                    First
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTablePage(p => Math.max(1, p - 1))}
+                    disabled={safeTablePage <= 1}
+                    className="px-3 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium flex items-center gap-1 cursor-pointer"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <span>Prev</span>
+                  </button>
+                  <span className="px-2 font-mono text-[#202124]">
+                    Page <strong>{safeTablePage}</strong> / {totalTablePages.toLocaleString()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setTablePage(p => Math.min(totalTablePages, p + 1))}
+                    disabled={safeTablePage >= totalTablePages}
+                    className="px-3 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTablePage(totalTablePages)}
+                    disabled={safeTablePage >= totalTablePages}
+                    className="px-2.5 py-1 bg-white hover:bg-[#f1f3f4] disabled:opacity-40 border border-[#dadce0] rounded-full font-medium cursor-pointer"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}

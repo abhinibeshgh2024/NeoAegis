@@ -27,7 +27,8 @@ import {
   orderBy, 
   addDoc, 
   deleteDoc,
-  getDocFromServer
+  getDocFromServer,
+  writeBatch
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -790,42 +791,54 @@ export async function fetchEnclaveUserData(uid: string): Promise<{ emails: any[]
   };
 }
 
-export async function saveEmailToEnclaveProfile(uid: string, selectedEmail: any): Promise<void> {
-  const rawEmailId = selectedEmail.id || `sc-${Date.now()}`;
-  const scopedDocId = sanitizeId(`${uid}_${rawEmailId}`);
+export async function saveEnclaveEmailsBatch(uid: string, records: any[]): Promise<void> {
+  if (!uid || records.length === 0) return;
   const localEmailsKey = `neoaegis_emails_${uid}`;
+  const nowIso = new Date().toISOString();
 
-  const spamScoreNum = Math.min(100, Math.max(0, Math.round(Number(selectedEmail.metrics?.spamScore ?? 10))));
-  const phishingNum = Math.min(100, Math.max(0, Math.round(Number(selectedEmail.metrics?.phishingLikelihood ?? 5))));
+  const payloads = records.slice(0, 250).map(selectedEmail => {
+    const rawEmailId = selectedEmail.id || `sc-${Date.now()}`;
+    const scopedDocId = sanitizeId(`${uid}_${rawEmailId}`);
+    const spamScoreNum = Math.min(100, Math.max(0, Math.round(Number(selectedEmail.metrics?.spamScore ?? 10))));
+    const phishingNum = Math.min(100, Math.max(0, Math.round(Number(selectedEmail.metrics?.phishingLikelihood ?? 5))));
+    return {
+      docId: scopedDocId,
+      id: scopedDocId,
+      subject: String(selectedEmail.subject || 'Untitled Email').substring(0, 200),
+      sender: String(selectedEmail.sender || 'unknown@sender.org').substring(0, 100),
+      recipient: String(selectedEmail.recipient || 'analyst@organization.com').substring(0, 100),
+      body: String(selectedEmail.body || '').substring(0, 10000),
+      rawHeaders: String(selectedEmail.rawHeaders || 'No headers').substring(0, 10000),
+      date: String(selectedEmail.timestamp || nowIso).substring(0, 100),
+      spamScore: spamScoreNum,
+      phishingLikelihood: phishingNum,
+      ownerId: uid.substring(0, 128),
+      createdAt: nowIso
+    };
+  });
 
-  const payload = {
-    id: scopedDocId,
-    subject: String(selectedEmail.subject || 'Untitled Email').substring(0, 200),
-    sender: String(selectedEmail.sender || 'unknown@sender.org').substring(0, 100),
-    recipient: String(selectedEmail.recipient || 'analyst@organization.com').substring(0, 100),
-    body: String(selectedEmail.body || '').substring(0, 10000),
-    rawHeaders: String(selectedEmail.rawHeaders || 'No headers').substring(0, 10000),
-    date: String(selectedEmail.timestamp || new Date().toISOString()).substring(0, 100),
-    spamScore: spamScoreNum,
-    phishingLikelihood: phishingNum,
-    ownerId: uid.substring(0, 128),
-    createdAt: new Date().toISOString()
-  };
-
-  // Always save to local mirror immediately
+  const payloadIds = new Set(payloads.map(p => p.docId));
   const existing = getLocalList<any>(localEmailsKey).filter(
-    item => item.docId !== scopedDocId && item.id !== scopedDocId
+    item => !payloadIds.has(item.docId) && !payloadIds.has(item.id)
   );
-  setLocalList(localEmailsKey, [{ docId: scopedDocId, ...payload }, ...existing]);
+  setLocalList(localEmailsKey, [...payloads, ...existing].slice(0, 250));
 
-  // Sync to Firestore if authenticated via Firebase Auth
   if (auth.currentUser && auth.currentUser.uid === uid) {
     try {
-      await setDoc(doc(db, 'scanned_emails', scopedDocId), payload);
+      const batch = writeBatch(db);
+      for (const p of payloads) {
+        const { docId, ...docBody } = p;
+        batch.set(doc(db, 'scanned_emails', docId), docBody);
+      }
+      await batch.commit();
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `scanned_emails/${scopedDocId}`);
+      handleFirestoreError(err, OperationType.WRITE, 'scanned_emails/batch');
     }
   }
+}
+
+export async function saveEmailToEnclaveProfile(uid: string, selectedEmail: any): Promise<void> {
+  await saveEnclaveEmailsBatch(uid, [selectedEmail]);
 }
 
 export async function deleteEmailFromEnclaveProfile(uid: string, docId: string): Promise<void> {
@@ -929,35 +942,39 @@ export async function saveUserDatasetEmailsBatch(
   ]);
   const allowedSources = new Set(['upload', 'csv_upload', 'trainer_sync', 'audit_stream', 'manual']);
 
-  for (const item of items) {
-    const docId = sanitizeId(`${uid}_${item.id}`);
-    const label =
-      item.label === 'legitimate' || item.label === 'spam' || item.label === 'phishing'
-        ? item.label
-        : 'spam';
-    const granularTier = allowedTiers.has(item.granularTier) ? item.granularTier : 'spam';
-    const source = allowedSources.has(item.source) ? item.source : 'upload';
+  // Mirror up to 250 representative items via single Firestore writeBatch so 50k CSVs never exhaust browser sockets/quota;
+  // full 50k rows persist reliably in IndexedDB + chunked /api/user/workspace.
+  const capped = items.slice(0, 250);
+  try {
+    const batch = writeBatch(db);
+    for (const item of capped) {
+      const docId = sanitizeId(`${uid}_${item.id}`);
+      const label =
+        item.label === 'legitimate' || item.label === 'spam' || item.label === 'phishing'
+          ? item.label
+          : 'spam';
+      const granularTier = allowedTiers.has(item.granularTier) ? item.granularTier : 'spam';
+      const source = allowedSources.has(item.source) ? item.source : 'upload';
 
-    const payload: PersistedDatasetEmailDoc = {
-      id: docId,
-      ownerId: uid.slice(0, 128),
-      subject: String(item.subject || '(No Subject)').slice(0, 300),
-      sender: String(item.sender || 'unknown@sender.org').slice(0, 150),
-      body: String(item.body || '').slice(0, 15000),
-      rawHeaders: String(item.rawHeaders || `From: ${item.sender || 'unknown'}`).slice(0, 10000),
-      label,
-      granularTier,
-      spamScore: Math.min(100, Math.max(0, Math.round(Number(item.spamScore) || 0))),
-      phishingLikelihood: Math.min(100, Math.max(0, Math.round(Number(item.phishingLikelihood) || 0))),
-      source,
-      createdAt: nowIso
-    };
-
-    try {
-      await setDoc(doc(db, 'user_dataset_emails', docId), payload);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `user_dataset_emails/${docId}`);
+      const payload: PersistedDatasetEmailDoc = {
+        id: docId,
+        ownerId: uid.slice(0, 128),
+        subject: String(item.subject || '(No Subject)').slice(0, 300),
+        sender: String(item.sender || 'unknown@sender.org').slice(0, 150),
+        body: String(item.body || '').slice(0, 15000),
+        rawHeaders: String(item.rawHeaders || `From: ${item.sender || 'unknown'}`).slice(0, 10000),
+        label,
+        granularTier,
+        spamScore: Math.min(100, Math.max(0, Math.round(Number(item.spamScore) || 0))),
+        phishingLikelihood: Math.min(100, Math.max(0, Math.round(Number(item.phishingLikelihood) || 0))),
+        source,
+        createdAt: nowIso
+      };
+      batch.set(doc(db, 'user_dataset_emails', docId), payload);
     }
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'user_dataset_emails/batch');
   }
 }
 

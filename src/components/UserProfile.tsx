@@ -728,7 +728,7 @@ export default function UserProfile({ selectedEmail, scannedEmailsList, onTrigge
                 </div>
               ) : (
                 <div className="space-y-2.5 max-h-[300px] overflow-y-auto no-scrollbar">
-                  {userEmails.map((emailItem) => (
+                  {userEmails.slice(0, 50).map((emailItem) => (
                     <div key={emailItem.docId} className="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-3 flex items-start justify-between gap-3 transition hover:border-[#1a73e8]">
                       <div className="space-y-1 text-left min-w-0 flex-1">
                         <div className="flex items-center space-x-1.5 flex-wrap">
