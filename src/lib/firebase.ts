@@ -353,6 +353,43 @@ async function syncUserDocToFirestore(user: EnclaveUser) {
   }
 }
 
+const DUPLICATE_EMAIL_ERROR =
+  'This email is already registered. You cannot create another account with the same email. Please sign in instead.';
+
+async function checkEmailRegisteredOnBackend(email: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/check-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim().toLowerCase() })
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data?.registered);
+  } catch {
+    return false;
+  }
+}
+
+async function registerEmailLockOnBackend(
+  email: string,
+  mode: 'signup' | 'sync_existing'
+): Promise<{ ok: boolean; alreadyRegistered?: boolean }> {
+  try {
+    const res = await fetch('/api/auth/register-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), mode })
+    });
+    if (res.status === 409) {
+      return { ok: false, alreadyRegistered: true };
+    }
+    return { ok: res.ok };
+  } catch {
+    return { ok: true };
+  }
+}
+
 export async function signUpWithEnclaveEmail(
   emailInput: string,
   passwordInput: string,
@@ -365,23 +402,23 @@ export async function signUpWithEnclaveEmail(
   const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32);
   const resolvedDob = (dateOfBirthInput?.trim() || '').slice(0, 16);
 
-  // Also store phone and DOB in local account registry for persistence
+  // 1. Block duplicate registration immediately if email exists in local account registry
   const accounts = getStoredAccounts();
+  if (accounts[normalizedEmail]) {
+    throw new Error(DUPLICATE_EMAIL_ERROR);
+  }
+
+  // 2. Block duplicate registration if email exists in global backend registry (across browsers/providers)
+  const existsOnBackend = await checkEmailRegisteredOnBackend(normalizedEmail);
+  if (existsOnBackend) {
+    throw new Error(DUPLICATE_EMAIL_ERROR);
+  }
+
   const deterministicUid = sanitizeId(
     `usr-${btoa(encodeURIComponent(normalizedEmail)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`
   );
-  accounts[normalizedEmail] = {
-    uid: deterministicUid,
-    email: normalizedEmail,
-    password: passwordInput,
-    displayName: resolvedName,
-    phoneNumber: resolvedPhone || accounts[normalizedEmail]?.phoneNumber || '',
-    dateOfBirth: resolvedDob || accounts[normalizedEmail]?.dateOfBirth || '',
-    createdAt: accounts[normalizedEmail]?.createdAt || new Date().toISOString()
-  };
-  saveStoredAccounts(accounts);
 
-  // 1. Try real Firebase Email/Password registration first
+  // 3. Try real Firebase Email/Password registration first
   try {
     const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, passwordInput);
     try {
@@ -389,6 +426,19 @@ export async function signUpWithEnclaveEmail(
     } catch {
       // Ignore profile update failure
     }
+
+    accounts[normalizedEmail] = {
+      uid: credential.user.uid,
+      email: normalizedEmail,
+      password: passwordInput,
+      displayName: resolvedName,
+      phoneNumber: resolvedPhone,
+      dateOfBirth: resolvedDob,
+      createdAt: new Date().toISOString()
+    };
+    saveStoredAccounts(accounts);
+    await registerEmailLockOnBackend(normalizedEmail, 'sync_existing');
+
     const userObj: EnclaveUser = {
       uid: credential.user.uid,
       email: credential.user.email || normalizedEmail,
@@ -402,28 +452,37 @@ export async function signUpWithEnclaveEmail(
     notifySessionListeners(userObj);
     return userObj;
   } catch (fbErr: any) {
-    // If account already exists in Firebase, try signing in directly
-    if (fbErr?.code === 'auth/email-already-in-use') {
-      try {
-        const signInCred = await signInWithEmailAndPassword(auth, normalizedEmail, passwordInput);
-        const userObj: EnclaveUser = {
-          uid: signInCred.user.uid,
-          email: signInCred.user.email || normalizedEmail,
-          displayName: signInCred.user.displayName || resolvedName,
-          phoneNumber: resolvedPhone || accounts[normalizedEmail]?.phoneNumber || null,
-          dateOfBirth: resolvedDob || accounts[normalizedEmail]?.dateOfBirth || null,
-          isCloudSynced: true
-        };
-        setLocalActiveSession(userObj);
-        await syncUserDocToFirestore(userObj);
-        notifySessionListeners(userObj);
-        return userObj;
-      } catch {
-        // Fall through to local enclave registration/update
-      }
+    const code = String(fbErr?.code || '');
+
+    // CRITICAL: Never allow creating another account OR bypassing password when email already exists in Firebase
+    if (code === 'auth/email-already-in-use') {
+      await registerEmailLockOnBackend(normalizedEmail, 'sync_existing');
+      throw new Error(DUPLICATE_EMAIL_ERROR);
+    }
+    if (code === 'auth/invalid-email') {
+      throw new Error('Invalid email address format.');
+    }
+    if (code === 'auth/weak-password') {
+      throw new Error('Password does not meet security requirements.');
     }
 
-    // 2. Seamless Local Enclave Registration Fallback (handles auth/operation-not-allowed, etc.)
+    // 4. Local Enclave Fallback ONLY when Firebase Email/Password provider is unavailable/disabled
+    const lockRes = await registerEmailLockOnBackend(normalizedEmail, 'signup');
+    if (lockRes.alreadyRegistered) {
+      throw new Error(DUPLICATE_EMAIL_ERROR);
+    }
+
+    accounts[normalizedEmail] = {
+      uid: deterministicUid,
+      email: normalizedEmail,
+      password: passwordInput,
+      displayName: resolvedName,
+      phoneNumber: resolvedPhone,
+      dateOfBirth: resolvedDob,
+      createdAt: new Date().toISOString()
+    };
+    saveStoredAccounts(accounts);
+
     const localUser: EnclaveUser = {
       uid: deterministicUid,
       email: normalizedEmail,
@@ -446,15 +505,6 @@ export async function signInWithEnclaveEmail(
   const normalizedEmail = emailInput.trim().toLowerCase();
   const resolvedPhone = (phoneNumberInput?.trim() || '').slice(0, 32);
 
-  // Save/update phone number in local registry if provided
-  if (resolvedPhone) {
-    const accounts = getStoredAccounts();
-    if (accounts[normalizedEmail]) {
-      accounts[normalizedEmail].phoneNumber = resolvedPhone;
-      saveStoredAccounts(accounts);
-    }
-  }
-
   // 1. Try real Firebase Email/Password sign-in first
   try {
     const credential = await signInWithEmailAndPassword(auth, normalizedEmail, passwordInput);
@@ -462,6 +512,19 @@ export async function signInWithEnclaveEmail(
     const resolvedName = credential.user.displayName || normalizedEmail.split('@')[0] || 'Analyst';
     const finalPhone = resolvedPhone || accounts[normalizedEmail]?.phoneNumber || null;
     const finalDob = accounts[normalizedEmail]?.dateOfBirth || null;
+
+    accounts[normalizedEmail] = {
+      uid: credential.user.uid,
+      email: normalizedEmail,
+      password: passwordInput,
+      displayName: resolvedName,
+      phoneNumber: finalPhone || '',
+      dateOfBirth: finalDob || '',
+      createdAt: accounts[normalizedEmail]?.createdAt || new Date().toISOString()
+    };
+    saveStoredAccounts(accounts);
+    await registerEmailLockOnBackend(normalizedEmail, 'sync_existing');
+
     const userObj: EnclaveUser = {
       uid: credential.user.uid,
       email: credential.user.email || normalizedEmail,
@@ -474,8 +537,19 @@ export async function signInWithEnclaveEmail(
     await syncUserDocToFirestore(userObj);
     notifySessionListeners(userObj);
     return userObj;
-  } catch {
-    // 2. Check Local Enclave Account Registry or auto-provision session so Firebase errors never block login
+  } catch (fbErr: any) {
+    const code = String(fbErr?.code || '');
+    if (code === 'auth/wrong-password') {
+      throw new Error('Incorrect password for this account. Please verify your credentials.');
+    }
+    if (code === 'auth/user-disabled') {
+      throw new Error('This account has been disabled.');
+    }
+    if (code === 'auth/too-many-requests') {
+      throw new Error('Too many failed sign-in attempts. Please try again later.');
+    }
+
+    // 2. Check Local Enclave Account Registry ONLY if already registered locally (never create duplicate account during Sign In)
     const accounts = getStoredAccounts();
     const existing = accounts[normalizedEmail];
 
@@ -488,6 +562,7 @@ export async function signInWithEnclaveEmail(
         existing.phoneNumber = resolvedPhone;
         saveStoredAccounts(accounts);
       }
+      await registerEmailLockOnBackend(normalizedEmail, 'sync_existing');
       const localUser: EnclaveUser = {
         uid: existing.uid,
         email: existing.email,
@@ -501,8 +576,12 @@ export async function signInWithEnclaveEmail(
       return localUser;
     }
 
-    // Auto-provision account if signing in for the first time
-    return signUpWithEnclaveEmail(normalizedEmail, passwordInput, normalizedEmail.split('@')[0], resolvedPhone);
+    const existsOnBackend = await checkEmailRegisteredOnBackend(normalizedEmail);
+    if (existsOnBackend || code === 'auth/invalid-credential') {
+      throw new Error('Invalid email or password for this registered account. Please verify your credentials.');
+    }
+
+    throw new Error('No registered account found for this email. Please switch to "Sign up" to create a new account.');
   }
 }
 
@@ -536,6 +615,7 @@ export async function signInWithEnclaveGoogle(phoneNumberInput?: string): Promis
         createdAt: accounts[emailKey]?.createdAt || new Date().toISOString()
       };
       saveStoredAccounts(accounts);
+      await registerEmailLockOnBackend(emailKey, 'sync_existing');
     }
 
     setLocalActiveSession(userObj);

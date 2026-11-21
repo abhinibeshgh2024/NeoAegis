@@ -55,11 +55,17 @@ interface BackendSaltConfig {
   salt: string;
 }
 
+interface RegisteredEmailRecord {
+  emailHash: string;
+  createdAt: string;
+}
+
 const DATA_DIR = path.resolve(process.cwd(), '.neoaegis-data');
 const CORPUS_PATH = path.join(DATA_DIR, 'combined_corpus.json');
 const MODEL_PATH = path.join(DATA_DIR, 'collective_model.json');
 const IMAGE_CORPUS_PATH = path.join(DATA_DIR, 'combined_image_corpus.json');
 const IMAGE_MODEL_PATH = path.join(DATA_DIR, 'collective_image_model.json');
+const REGISTERED_EMAILS_PATH = path.join(DATA_DIR, 'registered_emails.json');
 const SALT_PATH = path.join(DATA_DIR, 'server_salt.json');
 
 // Load Firebase projectId safely for verifyIdToken (needs no IAM)
@@ -105,6 +111,29 @@ const SERVER_SALT = getServerSalt();
 
 function hashContributor(uid: string): string {
   return crypto.createHmac('sha256', SERVER_SALT).update(uid).digest('hex');
+}
+
+function hashNormalizedEmail(email: string): string {
+  return crypto.createHmac('sha256', SERVER_SALT).update(`email:${email.trim().toLowerCase()}`).digest('hex');
+}
+
+function readRegisteredEmails(): RegisteredEmailRecord[] {
+  ensureDataDir();
+  try {
+    if (!fs.existsSync(REGISTERED_EMAILS_PATH)) return [];
+    const raw = fs.readFileSync(REGISTERED_EMAILS_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRegisteredEmails(records: RegisteredEmailRecord[]): void {
+  ensureDataDir();
+  const tmpPath = `${REGISTERED_EMAILS_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(records, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, REGISTERED_EMAILS_PATH);
 }
 
 function computeEmailDigest(subject: string, body: string, sender: string): string {
@@ -304,6 +333,59 @@ async function startServer() {
   // Health endpoint (non-sensitive)
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', service: 'neoaegis-collective-ml' });
+  });
+
+  /**
+   * POST /api/auth/check-email
+   * Checks anonymized HMAC digest of normalized email to prevent duplicate registrations
+   * with the same email across browsers or devices without storing plaintext emails.
+   */
+  app.post('/api/auth/check-email', (req: Request, res: Response) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ ok: false, error: 'Valid email is required.' });
+      return;
+    }
+    const emailHash = hashNormalizedEmail(email);
+    const records = readRegisteredEmails();
+    const registered = records.some(r => r.emailHash === emailHash);
+    res.json({ ok: true, registered });
+  });
+
+  /**
+   * POST /api/auth/register-email
+   * Atomically reserves/records an HMAC-hashed normalized email.
+   * Rejects duplicate 'signup' attempts with HTTP 409 Conflict.
+   */
+  app.post('/api/auth/register-email', (req: Request, res: Response) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const mode = req.body?.mode === 'sync_existing' ? 'sync_existing' : 'signup';
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ ok: false, error: 'Valid email is required.' });
+      return;
+    }
+    const emailHash = hashNormalizedEmail(email);
+    const records = readRegisteredEmails();
+    const exists = records.some(r => r.emailHash === emailHash);
+
+    if (exists && mode === 'signup') {
+      res.status(409).json({
+        ok: false,
+        alreadyRegistered: true,
+        error: 'This email is already registered. Another account cannot be created with the same email. Please sign in instead.'
+      });
+      return;
+    }
+
+    if (!exists) {
+      records.push({
+        emailHash,
+        createdAt: new Date().toISOString()
+      });
+      writeRegisteredEmails(records);
+    }
+
+    res.json({ ok: true, registered: true });
   });
 
   /**
