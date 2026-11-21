@@ -66,6 +66,7 @@ const MODEL_PATH = path.join(DATA_DIR, 'collective_model.json');
 const IMAGE_CORPUS_PATH = path.join(DATA_DIR, 'combined_image_corpus.json');
 const IMAGE_MODEL_PATH = path.join(DATA_DIR, 'collective_image_model.json');
 const REGISTERED_EMAILS_PATH = path.join(DATA_DIR, 'registered_emails.json');
+const WORKSPACES_DIR = path.join(DATA_DIR, 'workspaces');
 const SALT_PATH = path.join(DATA_DIR, 'server_salt.json');
 
 // Load Firebase projectId safely for verifyIdToken (needs no IAM)
@@ -134,6 +135,58 @@ function writeRegisteredEmails(records: RegisteredEmailRecord[]): void {
   const tmpPath = `${REGISTERED_EMAILS_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(records, null, 2), 'utf-8');
   fs.renameSync(tmpPath, REGISTERED_EMAILS_PATH);
+}
+
+interface UserWorkspacePayload {
+  batchRows?: any[];
+  batchMeta?: { fileName: string; uploadedAt: string; totalRows: number } | null;
+  trainerSamples?: any[];
+  trainerImages?: any[];
+  imageAssessments?: any[];
+  vaultEmails?: any[];
+  activeInspectorImage?: any | null;
+  updatedAt?: string;
+}
+
+function getUserWorkspacePath(uid: string): string {
+  ensureDataDir();
+  if (!fs.existsSync(WORKSPACES_DIR)) {
+    fs.mkdirSync(WORKSPACES_DIR, { recursive: true });
+  }
+  const safeHash = hashContributor(uid);
+  return path.join(WORKSPACES_DIR, `${safeHash}.json`);
+}
+
+function readUserWorkspace(uid: string): UserWorkspacePayload {
+  try {
+    const filePath = getUserWorkspacePath(uid);
+    if (!fs.existsSync(filePath)) return {};
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUserWorkspace(uid: string, patch: UserWorkspacePayload): UserWorkspacePayload {
+  const filePath = getUserWorkspacePath(uid);
+  const current = readUserWorkspace(uid);
+  const next: UserWorkspacePayload = {
+    ...current,
+    ...(patch.batchRows !== undefined ? { batchRows: Array.isArray(patch.batchRows) ? patch.batchRows : [] } : {}),
+    ...(patch.batchMeta !== undefined ? { batchMeta: patch.batchMeta } : {}),
+    ...(patch.trainerSamples !== undefined ? { trainerSamples: Array.isArray(patch.trainerSamples) ? patch.trainerSamples : [] } : {}),
+    ...(patch.trainerImages !== undefined ? { trainerImages: Array.isArray(patch.trainerImages) ? patch.trainerImages : [] } : {}),
+    ...(patch.imageAssessments !== undefined ? { imageAssessments: Array.isArray(patch.imageAssessments) ? patch.imageAssessments : [] } : {}),
+    ...(patch.vaultEmails !== undefined ? { vaultEmails: Array.isArray(patch.vaultEmails) ? patch.vaultEmails : [] } : {}),
+    ...(patch.activeInspectorImage !== undefined ? { activeInspectorImage: patch.activeInspectorImage } : {}),
+    updatedAt: new Date().toISOString()
+  };
+  const tmpPath = `${filePath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(next), 'utf-8');
+  fs.renameSync(tmpPath, filePath);
+  return next;
 }
 
 function computeEmailDigest(subject: string, body: string, sender: string): string {
@@ -328,11 +381,41 @@ function requireAuthorizedUid(req: Request, res: Response, next: NextFunction) {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   // Health endpoint (non-sensitive)
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', service: 'neoaegis-collective-ml' });
+  });
+
+  /**
+   * GET /api/user/workspace & POST /api/user/workspace
+   * Strictly isolated private storage for the signed-in caller UID's uploaded CSVs,
+   * trainer emails/images, image inspector state, and vault records.
+   */
+  app.get('/api/user/workspace', requireAuthorizedUid, (req: Request, res: Response) => {
+    const callerUid: string = (req as any).callerUid;
+    const workspace = readUserWorkspace(callerUid);
+    res.json({ ok: true, workspace });
+  });
+
+  app.post('/api/user/workspace', requireAuthorizedUid, (req: Request, res: Response) => {
+    try {
+      const callerUid: string = (req as any).callerUid;
+      const body = req.body || {};
+      const updated = writeUserWorkspace(callerUid, {
+        batchRows: body.batchRows,
+        batchMeta: body.batchMeta,
+        trainerSamples: body.trainerSamples,
+        trainerImages: body.trainerImages,
+        imageAssessments: body.imageAssessments,
+        vaultEmails: body.vaultEmails,
+        activeInspectorImage: body.activeInspectorImage
+      });
+      res.json({ ok: true, updatedAt: updated.updatedAt });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to persist user workspace.' });
+    }
   });
 
   /**

@@ -358,10 +358,24 @@ export function loadUserTrainerImages(uid?: string | null): ImageTrainingSample[
 
 export function saveUserTrainerImages(uid: string, images: ImageTrainingSample[]): void {
   if (!uid || typeof window === 'undefined') return;
+  const key = `neoaegis_trainer_images_${uid}`;
   try {
-    window.localStorage.setItem(`neoaegis_trainer_images_${uid}`, JSON.stringify(images));
-  } catch (err) {
-    console.warn('Unable to persist trainer image dataset (storage quota):', err);
+    window.localStorage.setItem(key, JSON.stringify(images));
+  } catch {
+    // Fallback if large base64 dataUrls hit browser 5MB quota: keep recent thumbnails + strip heavy blobs on older items
+    try {
+      const compacted = images.map((img, idx) =>
+        idx < 4 ? img : { ...img, dataUrl: '' }
+      );
+      window.localStorage.setItem(key, JSON.stringify(compacted));
+    } catch {
+      try {
+        const stripped = images.map(img => ({ ...img, dataUrl: '' }));
+        window.localStorage.setItem(key, JSON.stringify(stripped));
+      } catch (err) {
+        console.warn('Unable to persist trainer image dataset (storage quota):', err);
+      }
+    }
   }
 }
 
@@ -396,6 +410,48 @@ export function saveUserImageAssessment(uid: string, sample: ImageTrainingSample
     );
   } catch (err) {
     console.warn('Unable to persist image assessment telemetry:', err);
+  }
+}
+
+export interface PersistedInspectorState {
+  sample: ImageTrainingSample;
+  ocrDraft: string;
+  feedbackLabel: EmailLabel;
+}
+
+export function loadUserActiveInspectorImage(uid?: string | null): PersistedInspectorState | null {
+  const targetUid = uid !== undefined ? uid : activeMlUserUid;
+  if (!targetUid || typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`neoaegis_active_inspector_${targetUid}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedInspectorState;
+    return parsed && parsed.sample ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserActiveInspectorImage(uid: string, state: PersistedInspectorState | null): void {
+  if (!uid || typeof window === 'undefined') return;
+  const key = `neoaegis_active_inspector_${uid}`;
+  try {
+    if (!state) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    if (state) {
+      try {
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({ ...state, sample: { ...state.sample, dataUrl: '' } })
+        );
+      } catch {
+        // ignore quota errors
+      }
+    }
   }
 }
 
@@ -448,6 +504,53 @@ export function saveUserBatchReportMeta(
   } catch {
     // ignore storage errors
   }
+}
+
+export function mergeSamplesByKey(primary: TrainingSample[], secondary: TrainingSample[]): TrainingSample[] {
+  const seen = new Set<string>();
+  const merged: TrainingSample[] = [];
+  for (const s of [...primary, ...secondary]) {
+    if (!s) continue;
+    const key = `${String(s.subject || '').trim().toLowerCase()}::${String(s.sender || '').trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(s);
+  }
+  return merged;
+}
+
+export function mergeImagesByKey(
+  primary: ImageTrainingSample[],
+  secondary: ImageTrainingSample[]
+): ImageTrainingSample[] {
+  const seen = new Set<string>();
+  const merged: ImageTrainingSample[] = [];
+  for (const img of [...primary, ...secondary]) {
+    if (!img) continue;
+    const key = String(img.id || img.fileName || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(img);
+  }
+  return merged;
+}
+
+export function mergeBatchRowsByKey<T extends { id?: string; subject?: string; sender?: string }>(
+  primary: T[],
+  secondary: T[]
+): T[] {
+  const seen = new Set<string>();
+  const merged: T[] = [];
+  for (const row of [...primary, ...secondary]) {
+    if (!row) continue;
+    const key = row.id
+      ? String(row.id)
+      : `${String(row.subject || '').trim().toLowerCase()}::${String(row.sender || '').trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+  return merged;
 }
 
 export function validateAndImportModelJson(rawJson: string, targetUid: string): TrainedModelArtifact {
@@ -777,6 +880,53 @@ export async function retrainCollectiveModelOnBackend(
   const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : undefined;
   saveCollectiveBackendModelCache(sanitized, data.stats, imageUnit);
   return { model: sanitized, stats: data.stats };
+}
+
+export interface RemoteUserWorkspace {
+  batchRows?: any[];
+  batchMeta?: { fileName: string; uploadedAt: string; totalRows: number } | null;
+  trainerSamples?: TrainingSample[];
+  trainerImages?: ImageTrainingSample[];
+  imageAssessments?: ImageTrainingSample[];
+  vaultEmails?: any[];
+  activeInspectorImage?: PersistedInspectorState | null;
+  updatedAt?: string;
+}
+
+export async function syncUserWorkspaceToBackend(
+  uid: string,
+  idToken: string | null,
+  patch: RemoteUserWorkspace
+): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const res = await fetch('/api/user/workspace', {
+      method: 'POST',
+      headers: buildBackendHeaders(uid, idToken),
+      body: JSON.stringify(patch)
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchUserWorkspaceFromBackend(
+  uid: string,
+  idToken?: string | null
+): Promise<RemoteUserWorkspace | null> {
+  if (!uid) return null;
+  try {
+    const res = await fetch('/api/user/workspace', {
+      method: 'GET',
+      headers: buildBackendHeaders(uid, idToken)
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.workspace || null;
+  } catch {
+    return null;
+  }
 }
 
 export const CSV_SCHEMA_EXAMPLE_CONTENT = [

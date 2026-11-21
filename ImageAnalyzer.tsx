@@ -20,10 +20,18 @@ import {
   extractImageTelemetryFromSource,
   predictImageWithModel
 } from './src/lib/imageVisionEngine';
+import {
+  loadUserActiveInspectorImage,
+  saveUserActiveInspectorImage,
+  syncUserWorkspaceToBackend
+} from './src/lib/localMlEngine';
+import { getFirebaseIdTokenSafely } from './src/lib/firebase';
 import { analyzeEmailWithModel } from './spamEngine';
 import InfoButton from './src/components/InfoButton';
 
 interface ImageAnalyzerProps {
+  currentUserUid?: string;
+  syncTick?: number;
   activeModel?: TrainedModelArtifact | null;
   modelVersion?: number;
   onSendToTrainer?: (sample: ImageTrainingSample) => void;
@@ -32,20 +40,79 @@ interface ImageAnalyzerProps {
 }
 
 export default function ImageAnalyzer({
+  currentUserUid,
+  syncTick = 0,
   activeModel,
   modelVersion = 0,
   onSendToTrainer,
   onSaveScanToVault,
   onRecordImageAssessment
 }: ImageAnalyzerProps) {
-  const [activeSample, setActiveSample] = useState<ImageTrainingSample | null>(null);
-  const [ocrDraft, setOcrDraft] = useState('');
-  const [prediction, setPrediction] = useState<ImagePredictionResult | null>(null);
+  const initialPersisted = currentUserUid ? loadUserActiveInspectorImage(currentUserUid) : null;
+  const [activeSample, setActiveSample] = useState<ImageTrainingSample | null>(
+    initialPersisted?.sample || null
+  );
+  const [ocrDraft, setOcrDraft] = useState(initialPersisted?.ocrDraft || '');
+  const [prediction, setPrediction] = useState<ImagePredictionResult | null>(() =>
+    initialPersisted?.sample
+      ? predictImageWithModel(
+          initialPersisted.sample.extractedFeatures,
+          initialPersisted.ocrDraft || '',
+          activeModel?.imageUnit
+        )
+      : null
+  );
   const [analyzing, setAnalyzing] = useState(false);
-  const [feedbackLabel, setFeedbackLabel] = useState<EmailLabel>('phishing');
+  const [feedbackLabel, setFeedbackLabel] = useState<EmailLabel>(
+    initialPersisted?.feedbackLabel || 'phishing'
+  );
   const [actionBanner, setActionBanner] = useState<string | null>(null);
 
+  const loadedUidRef = useRef<string | undefined>(currentUserUid);
+  const loadedSyncTickRef = useRef<number | undefined>(syncTick);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Hydrate persisted active image on user change or backend vault sync
+  useEffect(() => {
+    const uidChanged = loadedUidRef.current !== currentUserUid;
+    const syncChanged = loadedSyncTickRef.current !== syncTick;
+    if (!uidChanged && !syncChanged) return;
+    loadedUidRef.current = currentUserUid;
+    loadedSyncTickRef.current = syncTick;
+
+    if (!currentUserUid) {
+      setActiveSample(null);
+      setOcrDraft('');
+      setPrediction(null);
+      setActionBanner(null);
+      return;
+    }
+
+    const saved = loadUserActiveInspectorImage(currentUserUid);
+    if (uidChanged) {
+      if (saved?.sample) {
+        setActiveSample(saved.sample);
+        setOcrDraft(saved.ocrDraft || '');
+        setFeedbackLabel(saved.feedbackLabel || saved.sample.label);
+        setPrediction(
+          predictImageWithModel(saved.sample.extractedFeatures, saved.ocrDraft || '', activeModel?.imageUnit)
+        );
+      } else {
+        setActiveSample(null);
+        setOcrDraft('');
+        setPrediction(null);
+      }
+      setActionBanner(null);
+    } else if (!activeSample && saved?.sample) {
+      setActiveSample(saved.sample);
+      setOcrDraft(saved.ocrDraft || '');
+      setFeedbackLabel(saved.feedbackLabel || saved.sample.label);
+      setPrediction(
+        predictImageWithModel(saved.sample.extractedFeatures, saved.ocrDraft || '', activeModel?.imageUnit)
+      );
+    }
+  }, [currentUserUid, syncTick]);
 
   // Immediately re-score active image whenever user trains, imports, or collective image model updates
   useEffect(() => {
@@ -54,6 +121,20 @@ export default function ImageAnalyzer({
       predictImageWithModel(activeSample.extractedFeatures, ocrDraft, activeModel?.imageUnit)
     );
   }, [modelVersion, activeModel]);
+
+  const persistInspectorState = async (
+    sample: ImageTrainingSample,
+    ocr: string,
+    lbl: EmailLabel
+  ) => {
+    if (!currentUserUid) return;
+    const state = { sample, ocrDraft: ocr, feedbackLabel: lbl };
+    saveUserActiveInspectorImage(currentUserUid, state);
+    const idToken = await getFirebaseIdTokenSafely();
+    await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+      activeInspectorImage: state
+    });
+  };
 
   // Real client-side Canvas pixel & edge extraction for uploaded image files
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -90,6 +171,9 @@ export default function ImageAnalyzer({
         setOcrDraft('');
         setFeedbackLabel(initialPred.predictedLabel);
         setPrediction(initialPred);
+        await persistInspectorState(uploadedSample, '', initialPred.predictedLabel);
+        onRecordImageAssessment?.(uploadedSample);
+        setActionBanner(`Analyzed "${file.name}" and saved to your isolated workspace.`);
       } catch (err) {
         setActionBanner(err instanceof Error ? err.message : 'Unable to parse uploaded image pixels.');
       } finally {
@@ -110,16 +194,18 @@ export default function ImageAnalyzer({
         ocrDraft,
         activeSample.telemetry.fileSizeKb * 1024
       );
+      const nextPred = predictImageWithModel(updated.extractedFeatures, ocrDraft, activeModel?.imageUnit);
       const refreshedSample: ImageTrainingSample = {
         ...activeSample,
         ocrText: ocrDraft,
+        label: feedbackLabel,
         extractedFeatures: updated.extractedFeatures,
         telemetry: updated.telemetry
       };
       setActiveSample(refreshedSample);
-      setPrediction(
-        predictImageWithModel(refreshedSample.extractedFeatures, ocrDraft, activeModel?.imageUnit)
-      );
+      setPrediction(nextPred);
+      await persistInspectorState(refreshedSample, ocrDraft, feedbackLabel);
+      onRecordImageAssessment?.(refreshedSample);
     } finally {
       setAnalyzing(false);
     }
@@ -267,7 +353,16 @@ export default function ImageAnalyzer({
                 <span className="font-medium text-slate-800">Workflow Actions</span>
                 <select
                   value={feedbackLabel}
-                  onChange={e => setFeedbackLabel(e.target.value as EmailLabel)}
+                  onChange={e => {
+                    const nextLbl = e.target.value as EmailLabel;
+                    setFeedbackLabel(nextLbl);
+                    if (activeSample) {
+                      const updatedSample = { ...activeSample, label: nextLbl };
+                      setActiveSample(updatedSample);
+                      persistInspectorState(updatedSample, ocrDraft, nextLbl);
+                      onRecordImageAssessment?.({ ...updatedSample, ocrText: ocrDraft });
+                    }
+                  }}
                   aria-label="Ground truth label for training"
                   className="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg text-xs font-medium capitalize cursor-pointer"
                 >

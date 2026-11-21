@@ -39,15 +39,25 @@ import {
   contributeSamplesToBackend,
   contributeImagesToBackend,
   fetchCollectiveModelFromBackend,
+  fetchUserWorkspaceFromBackend,
+  loadUserActiveInspectorImage,
+  loadUserBatchReportMeta,
   loadUserBatchRows,
+  loadUserImageAssessments,
   loadUserTrainedModel,
   loadUserTrainerImages,
   loadUserTrainerSamples,
+  mergeBatchRowsByKey,
+  mergeImagesByKey,
+  mergeSamplesByKey,
+  saveUserActiveInspectorImage,
+  saveUserBatchReportMeta,
   saveUserBatchRows,
   saveUserImageAssessment,
   saveUserTrainerImages,
   saveUserTrainerSamples,
-  setActiveMlUserUid
+  setActiveMlUserUid,
+  syncUserWorkspaceToBackend
 } from './src/lib/localMlEngine';
 import Dashboard from './Dashboard';
 import EmailAnalyzer from './EmailAnalyzer';
@@ -127,11 +137,40 @@ export default function App() {
     const stats = getUserPortalStats(uid);
     setWorkingSeconds(stats.workingSeconds);
 
-    // 1. Fetch collective backend model + aggregate stats first (zero cross-user raw emails)
+    // 1. Fetch collective backend model + aggregate stats AND this user's own private backend workspace
     const idToken = await getFirebaseIdTokenSafely();
-    const { stats: backendStats } = await fetchCollectiveModelFromBackend(uid, idToken);
+    const [{ stats: backendStats }, remoteWorkspace] = await Promise.all([
+      fetchCollectiveModelFromBackend(uid, idToken),
+      fetchUserWorkspaceFromBackend(uid, idToken)
+    ]);
     if (backendStats) {
       setCollectiveStats(backendStats);
+    }
+
+    if (remoteWorkspace) {
+      if (Array.isArray(remoteWorkspace.trainerSamples) && remoteWorkspace.trainerSamples.length > 0) {
+        const mergedSamples = mergeSamplesByKey(loadUserTrainerSamples(uid), remoteWorkspace.trainerSamples);
+        saveUserTrainerSamples(uid, mergedSamples);
+      }
+      if (Array.isArray(remoteWorkspace.trainerImages) && remoteWorkspace.trainerImages.length > 0) {
+        const mergedImgs = mergeImagesByKey(loadUserTrainerImages(uid) || [], remoteWorkspace.trainerImages);
+        saveUserTrainerImages(uid, mergedImgs);
+      }
+      if (Array.isArray(remoteWorkspace.batchRows) && remoteWorkspace.batchRows.length > 0) {
+        const mergedBatch = mergeBatchRowsByKey(loadUserBatchRows(uid), remoteWorkspace.batchRows);
+        saveUserBatchRows(uid, mergedBatch);
+      }
+      if (remoteWorkspace.batchMeta && !loadUserBatchReportMeta(uid)) {
+        saveUserBatchReportMeta(uid, remoteWorkspace.batchMeta);
+      }
+      if (Array.isArray(remoteWorkspace.imageAssessments) && remoteWorkspace.imageAssessments.length > 0) {
+        for (const a of remoteWorkspace.imageAssessments) {
+          saveUserImageAssessment(uid, a);
+        }
+      }
+      if (remoteWorkspace.activeInspectorImage && !loadUserActiveInspectorImage(uid)) {
+        saveUserActiveInspectorImage(uid, remoteWorkspace.activeInspectorImage);
+      }
     }
 
     // 2. Hydrate this user's private persisted dataset emails from Firestore strictly matching ownerId == uid
@@ -252,11 +291,13 @@ export default function App() {
       };
     });
 
-    setEmails(reconstructedRecords);
+    setEmails(prev => {
+      const existingIds = new Set(reconstructedRecords.map(r => `${r.subject.toLowerCase()}::${r.sender.toLowerCase()}`));
+      const extraInMemory = prev.filter(p => !existingIds.has(`${p.subject.toLowerCase()}::${p.sender.toLowerCase()}`));
+      return [...extraInMemory, ...reconstructedRecords];
+    });
     setSelectedEmail(prev => {
-      if (prev && reconstructedRecords.some(r => r.id === prev.id)) {
-        return prev;
-      }
+      if (prev) return prev;
       return reconstructedRecords[0] || null;
     });
 
@@ -481,9 +522,7 @@ export default function App() {
       };
     });
 
-    await handleAddNewEmails(evaluatedRecords);
-
-    // Also append into persisted Batch CSV Auditor rows so they appear and stay saved there too
+    // Append into persisted Batch CSV Auditor rows FIRST so syncUserIsolatedVault merges cleanly
     const existingBatch = loadUserBatchRows(currentUser.uid) || [];
     const existingKeys = new Set(existingBatch.map((b: any) => `${String(b.subject).toLowerCase()}::${String(b.sender).toLowerCase()}`));
     const newBatchRows = evaluatedRecords
@@ -501,8 +540,15 @@ export default function App() {
       }));
 
     if (newBatchRows.length > 0) {
-      saveUserBatchRows(currentUser.uid, [...newBatchRows, ...existingBatch]);
+      const mergedBatch = [...newBatchRows, ...existingBatch];
+      saveUserBatchRows(currentUser.uid, mergedBatch);
+      const idToken = await getFirebaseIdTokenSafely();
+      await syncUserWorkspaceToBackend(currentUser.uid, idToken, {
+        batchRows: mergedBatch
+      });
     }
+
+    await handleAddNewEmails(evaluatedRecords);
   };
 
   // Single email analyzed: save strictly to current user's profile and increment parsed counter
@@ -530,7 +576,7 @@ export default function App() {
     { id: 'image', label: 'Image OCR Inspector', icon: Image },
     { id: 'batch', label: 'Batch CSV Auditor', icon: FileSpreadsheet },
     { id: 'rag', label: 'SecOps RAG Assistant', icon: Bot },
-    { id: 'metrics', label: 'Overall Accuracy', icon: Gauge },
+    { id: 'metrics', label: 'Accuracy & F1 Matrix', icon: Gauge },
     { id: 'trainer', label: 'Trainer', icon: BrainCircuit },
     { id: 'profile', label: 'Profile Enclave', icon: User },
     { id: 'about', label: 'About NeoAegis', icon: Info }
@@ -1300,17 +1346,22 @@ export default function App() {
 
             {currentTab === 'image' && (
               <ImageAnalyzer
+                currentUserUid={currentUser?.uid}
+                syncTick={vaultSyncTick}
                 activeModel={activeModel}
                 modelVersion={modelVersion}
                 onSendToTrainer={async (imgSample) => {
                   setIncomingImageSamples(prev => [imgSample, ...prev]);
                   if (currentUser) {
                     const existingImgs = loadUserTrainerImages(currentUser.uid) || [];
-                    if (!existingImgs.some(i => i.id === imgSample.id)) {
-                      saveUserTrainerImages(currentUser.uid, [imgSample, ...existingImgs]);
-                    }
+                    const mergedImgs = mergeImagesByKey([imgSample], existingImgs);
+                    saveUserTrainerImages(currentUser.uid, mergedImgs);
                     saveUserImageAssessment(currentUser.uid, imgSample);
                     const idToken = await getFirebaseIdTokenSafely();
+                    await syncUserWorkspaceToBackend(currentUser.uid, idToken, {
+                      trainerImages: mergedImgs,
+                      imageAssessments: loadUserImageAssessments(currentUser.uid)
+                    });
                     const synced = await contributeImagesToBackend(
                       currentUser.uid,
                       idToken,
@@ -1328,6 +1379,9 @@ export default function App() {
                   if (currentUser) {
                     saveUserImageAssessment(currentUser.uid, imgSample);
                     const idToken = await getFirebaseIdTokenSafely();
+                    await syncUserWorkspaceToBackend(currentUser.uid, idToken, {
+                      imageAssessments: loadUserImageAssessments(currentUser.uid)
+                    });
                     const synced = await contributeImagesToBackend(
                       currentUser.uid,
                       idToken,

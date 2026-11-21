@@ -29,9 +29,11 @@ import {
   loadUserBatchReportMeta,
   loadUserBatchRows,
   loadUserTrainedModel,
+  mergeBatchRowsByKey,
   parseDatasetFileContent,
   saveUserBatchReportMeta,
-  saveUserBatchRows
+  saveUserBatchRows,
+  syncUserWorkspaceToBackend
 } from './src/lib/localMlEngine';
 import {
   deleteUserDatasetEmail,
@@ -191,19 +193,30 @@ export default function BatchAnalyzer({
   const loadedUidRef = useRef<string | undefined>(currentUserUid);
   const loadedSyncTickRef = useRef<number | undefined>(syncTick);
 
-  // Hydrate cleanly if user UID changes or Firestore vault sync completes (strict per-user isolation)
+  // Hydrate cleanly on user UID change; merge additively on async vault sync so uploaded rows never vanish
   useEffect(() => {
     const uidChanged = loadedUidRef.current !== currentUserUid;
     const syncChanged = loadedSyncTickRef.current !== syncTick;
     if (!uidChanged && !syncChanged) return;
     loadedUidRef.current = currentUserUid;
     loadedSyncTickRef.current = syncTick;
-    setEmails(buildInitialRows(currentUserUid));
-    setBatchMeta(currentUserUid ? loadUserBatchReportMeta(currentUserUid) : null);
+
+    const hydrated = buildInitialRows(currentUserUid);
     if (uidChanged) {
+      setEmails(hydrated);
+      setBatchMeta(currentUserUid ? loadUserBatchReportMeta(currentUserUid) : null);
       setReportCategoryFilter('all');
       setReportTierFilter('all');
       setInspectorIndex(0);
+    } else {
+      setEmails(prev => {
+        const merged = mergeBatchRowsByKey(prev, hydrated);
+        if (currentUserUid) {
+          saveUserBatchRows(currentUserUid, merged);
+        }
+        return merged;
+      });
+      setBatchMeta(prevMeta => prevMeta || (currentUserUid ? loadUserBatchReportMeta(currentUserUid) : null));
     }
   }, [currentUserUid, syncTick]);
 
@@ -382,7 +395,7 @@ export default function BatchAnalyzer({
           })
         );
 
-        const nextAllRows = [...evaluatedBatch, ...emails];
+        const nextAllRows = mergeBatchRowsByKey(evaluatedBatch, emails);
         setEmails(nextAllRows);
 
         const meta = {
@@ -392,7 +405,14 @@ export default function BatchAnalyzer({
         };
         setBatchMeta(meta);
         if (currentUserUid) {
+          // Persist synchronously BEFORE firing onAddEmailRecords / syncUserIsolatedVault so rows cannot vanish
+          saveUserBatchRows(currentUserUid, nextAllRows);
           saveUserBatchReportMeta(currentUserUid, meta);
+          const idToken = await getFirebaseIdTokenSafely();
+          await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+            batchRows: nextAllRows,
+            batchMeta: meta
+          });
         }
 
         // 3. Persist privately for this user in Firestore (`user_dataset_emails`) + Personal Audit Stream
@@ -450,11 +470,17 @@ export default function BatchAnalyzer({
     event.target.value = '';
   };
 
-  const handleClearBatch = () => {
+  const handleClearBatch = async () => {
     setEmails([]);
     setBatchMeta(null);
     if (currentUserUid) {
+      saveUserBatchRows(currentUserUid, []);
       saveUserBatchReportMeta(currentUserUid, null);
+      const idToken = await getFirebaseIdTokenSafely();
+      await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+        batchRows: [],
+        batchMeta: null
+      });
     }
     setReportCategoryFilter('all');
     setReportTierFilter('all');
@@ -463,8 +489,14 @@ export default function BatchAnalyzer({
   };
 
   const handleRemoveBatchRow = async (id: string) => {
-    setEmails(prev => prev.filter(r => r.id !== id));
+    const nextRows = emails.filter(r => r.id !== id);
+    setEmails(nextRows);
     if (currentUserUid) {
+      saveUserBatchRows(currentUserUid, nextRows);
+      const idToken = await getFirebaseIdTokenSafely();
+      await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+        batchRows: nextRows
+      });
       await deleteUserDatasetEmail(currentUserUid, id);
     }
   };

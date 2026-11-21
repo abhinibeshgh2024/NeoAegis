@@ -44,9 +44,12 @@ import {
   setActiveModelPreference,
   loadUserTrainedModel,
   loadPersonalTrainedModel,
+  mergeSamplesByKey,
+  mergeImagesByKey,
   contributeSamplesToBackend,
   contributeImagesToBackend,
-  retrainCollectiveModelOnBackend
+  retrainCollectiveModelOnBackend,
+  syncUserWorkspaceToBackend
 } from '../lib/localMlEngine';
 import {
   deleteUserDatasetEmail,
@@ -201,18 +204,21 @@ export default function TrainerLab({
   const loadedUidRef = useRef<string>(currentUserUid);
   const loadedSyncTickRef = useRef<number>(syncTick);
 
-  // Reload datasets cleanly on account switch or async Firestore vault hydration
+  // Reload datasets cleanly on account switch; merge additively on async Firestore/backend vault hydration
   useEffect(() => {
     const uidChanged = loadedUidRef.current !== currentUserUid;
     const syncChanged = loadedSyncTickRef.current !== syncTick;
     if (!uidChanged && !syncChanged) return;
     loadedUidRef.current = currentUserUid;
     loadedSyncTickRef.current = syncTick;
-    setSamples(loadUserTrainerSamples(currentUserUid));
+
+    const hydratedSamples = loadUserTrainerSamples(currentUserUid);
+    const hydratedImages = loadUserTrainerImages(currentUserUid) || [];
+
     if (uidChanged) {
+      setSamples(hydratedSamples);
       setModelMode(getActiveModelPreference(currentUserUid));
-      const savedImgs = loadUserTrainerImages(currentUserUid);
-      setImageSamples(savedImgs !== null ? savedImgs : []);
+      setImageSamples(hydratedImages);
       setImagesHydrated(true);
       setProbeResult(null);
       setImageProbeSample(null);
@@ -221,6 +227,17 @@ export default function TrainerLab({
       setStatusMessage(null);
       setLiveHistory([]);
       setLiveImageHistory([]);
+    } else {
+      setSamples(prev => {
+        const merged = mergeSamplesByKey(prev, hydratedSamples);
+        saveUserTrainerSamples(currentUserUid, merged);
+        return merged;
+      });
+      setImageSamples(prev => {
+        const merged = mergeImagesByKey(prev, hydratedImages);
+        saveUserTrainerImages(currentUserUid, merged);
+        return merged;
+      });
     }
   }, [currentUserUid, syncTick]);
 
@@ -458,8 +475,15 @@ export default function TrainerLab({
       return;
     }
 
-    const nextSamples = [...selected, ...samples];
+    const nextSamples = mergeSamplesByKey(selected, samples);
     setSamples(nextSamples);
+    // Persist synchronously BEFORE archive/vault sync so rows can never vanish
+    saveUserTrainerSamples(currentUserUid, nextSamples);
+
+    const idToken = await getFirebaseIdTokenSafely();
+    await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+      trainerSamples: nextSamples
+    });
 
     // Persist privately to Firestore (`user_dataset_emails`) for this user only
     await saveUserDatasetEmailsBatch(
@@ -483,7 +507,6 @@ export default function TrainerLab({
     }
 
     // Contribute anonymized copies to collective backend dataset & auto-retrain collective model
-    const idToken = await getFirebaseIdTokenSafely();
     const backendRes = await contributeSamplesToBackend(
       currentUserUid,
       idToken,
@@ -614,9 +637,14 @@ export default function TrainerLab({
     }
 
     if (added.length > 0) {
-      setImageSamples(prev => [...added, ...prev]);
+      const nextImages = mergeImagesByKey(added, imageSamples);
+      setImageSamples(nextImages);
+      saveUserTrainerImages(currentUserUid, nextImages);
       setUploadImageOcr('');
       const idToken = await getFirebaseIdTokenSafely();
+      await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+        trainerImages: nextImages
+      });
       const backendImgRes = await contributeImagesToBackend(
         currentUserUid,
         idToken,
@@ -735,11 +763,18 @@ export default function TrainerLab({
       evaluatedScore: classified.severityScore,
       source: 'manual'
     };
-    setSamples(prev => [item, ...prev]);
+    const nextManualList = mergeSamplesByKey([item], samples);
+    setSamples(nextManualList);
+    saveUserTrainerSamples(currentUserUid, nextManualList);
     setNewSubject('');
     setNewSender('');
     setNewBody('');
     setShowAddSample(false);
+
+    const idToken = await getFirebaseIdTokenSafely();
+    await syncUserWorkspaceToBackend(currentUserUid, idToken, {
+      trainerSamples: nextManualList
+    });
 
     await saveUserDatasetEmailsBatch(currentUserUid, [
       {
@@ -756,7 +791,6 @@ export default function TrainerLab({
       }
     ]);
 
-    const idToken = await getFirebaseIdTokenSafely();
     const backendRes = await contributeSamplesToBackend(currentUserUid, idToken, [item], undefined, true);
     if (backendRes.ok) {
       onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
@@ -769,33 +803,42 @@ export default function TrainerLab({
   };
 
   const handleUpdateSampleLabel = (id: string, updatedLabel: EmailLabel) => {
-    setSamples(prev =>
-      prev.map(s => {
-        if (s.id !== id) return s;
-        const classified = classifyGranularEmailTier(s.subject, s.body, s.sender, s.rawHeaders || '', updatedLabel, s.evaluatedScore);
-        return { ...s, label: updatedLabel, granularTier: classified.granularTier };
-      })
+    const nextList = samples.map(s => {
+      if (s.id !== id) return s;
+      const classified = classifyGranularEmailTier(s.subject, s.body, s.sender, s.rawHeaders || '', updatedLabel, s.evaluatedScore);
+      return { ...s, label: updatedLabel, granularTier: classified.granularTier };
+    });
+    setSamples(nextList);
+    saveUserTrainerSamples(currentUserUid, nextList);
+    getFirebaseIdTokenSafely().then(tok =>
+      syncUserWorkspaceToBackend(currentUserUid, tok, { trainerSamples: nextList })
     );
   };
 
   const handleRemoveSample = async (id: string) => {
-    setSamples(prev => prev.filter(s => s.id !== id));
+    const nextList = samples.filter(s => s.id !== id);
+    setSamples(nextList);
+    saveUserTrainerSamples(currentUserUid, nextList);
+    const tok = await getFirebaseIdTokenSafely();
+    await syncUserWorkspaceToBackend(currentUserUid, tok, { trainerSamples: nextList });
     await deleteUserDatasetEmail(currentUserUid, id);
   };
 
   const handleUpdateImageLabel = (id: string, updatedLabel: EmailLabel) => {
     const updatedList = imageSamples.map(s => (s.id === id ? { ...s, label: updatedLabel } : s));
     setImageSamples(updatedList);
+    saveUserTrainerImages(currentUserUid, updatedList);
     const changed = updatedList.find(s => s.id === id);
-    if (changed) {
-      getFirebaseIdTokenSafely().then(idToken =>
+    getFirebaseIdTokenSafely().then(idToken => {
+      syncUserWorkspaceToBackend(currentUserUid, idToken, { trainerImages: updatedList });
+      if (changed) {
         contributeImagesToBackend(currentUserUid, idToken, [changed], undefined, true).then(res => {
           if (res.ok) {
             onCollectiveModelSynced?.(loadUserTrainedModel(currentUserUid), res.stats);
           }
-        })
-      );
-    }
+        });
+      }
+    });
   };
 
   const handleUpdateImageOcr = async (id: string, newOcr: string) => {
@@ -825,7 +868,12 @@ export default function TrainerLab({
   };
 
   const handleRemoveImageSample = (id: string) => {
-    setImageSamples(prev => prev.filter(s => s.id !== id));
+    const nextList = imageSamples.filter(s => s.id !== id);
+    setImageSamples(nextList);
+    saveUserTrainerImages(currentUserUid, nextList);
+    getFirebaseIdTokenSafely().then(idToken =>
+      syncUserWorkspaceToBackend(currentUserUid, idToken, { trainerImages: nextList })
+    );
   };
 
   // Run 100% client-side Text ML training
