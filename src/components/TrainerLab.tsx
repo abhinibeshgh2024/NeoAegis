@@ -7,7 +7,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   BrainCircuit, Upload, Download, Play, RotateCcw, Plus, Trash2,
   Database, CheckCircle2, AlertTriangle, FileJson, FileSpreadsheet,
-  Sliders, Sparkles, Search, Layers, Image as ImageIcon, Eye
+  Sliders, Sparkles, Search, Layers, Image as ImageIcon, Eye, X, Check
 } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import {
   EmailLabel,
+  GranularThreatTier,
   EmailRecord,
   TrainingSample,
   ImageTrainingSample,
@@ -30,8 +31,15 @@ import {
   clearUserTrainedModel,
   validateAndImportModelJson,
   predictWithModel,
-  saveUserTrainedImageUnit
+  saveUserTrainedImageUnit,
+  loadUserTrainerSamples,
+  saveUserTrainerSamples,
+  loadUserTrainerImages,
+  saveUserTrainerImages,
+  classifyGranularEmailTier,
+  GRANULAR_TIER_META
 } from '../lib/localMlEngine';
+import { analyzeEmailWithModel } from '../../spamEngine';
 import {
   extractImageTelemetryFromSource,
   generateStarterImageSamples,
@@ -48,6 +56,42 @@ interface TrainerLabProps {
   incomingEmailSamples?: TrainingSample[];
   incomingImageSamples?: ImageTrainingSample[];
   preferredUnit?: 'text' | 'image';
+  onArchiveUploadedCsvEmails?: (samples: TrainingSample[]) => void;
+}
+
+interface PendingCsvRow extends TrainingSample {
+  included: boolean;
+}
+
+interface PendingCsvModalState {
+  fileName: string;
+  rows: PendingCsvRow[];
+}
+
+const TIER_ORDER: GranularThreatTier[] = [
+  'complete_legitimate',
+  'suspicious',
+  'spam',
+  'highly_spam',
+  'phishing',
+  'highly_phishing'
+];
+
+function getTierBadgeClasses(tier: GranularThreatTier): string {
+  switch (tier) {
+    case 'complete_legitimate':
+      return 'bg-[#e6f4ea] text-[#137333] border-[#a8dab5]';
+    case 'suspicious':
+      return 'bg-[#e8f0fe] text-[#1967d2] border-[#aecbfa]';
+    case 'spam':
+      return 'bg-[#fef7e0] text-[#b06000] border-[#fde293]';
+    case 'highly_spam':
+      return 'bg-[#fef7e0] text-[#b06000] border-[#e37400] font-semibold';
+    case 'phishing':
+      return 'bg-[#fce8e6] text-[#c5221f] border-[#fad2cf]';
+    case 'highly_phishing':
+      return 'bg-[#fce8e6] text-[#c5221f] border-[#d93025] font-semibold';
+  }
 }
 
 export default function TrainerLab({
@@ -57,7 +101,8 @@ export default function TrainerLab({
   onModelUpdated,
   incomingEmailSamples = [],
   incomingImageSamples = [],
-  preferredUnit
+  preferredUnit,
+  onArchiveUploadedCsvEmails
 }: TrainerLabProps) {
   // Active Unit Mode inside Trainer: Text & Header Unit vs Image Training Unit
   const [trainerUnit, setTrainerUnit] = useState<'text' | 'image'>(preferredUnit || 'text');
@@ -68,9 +113,10 @@ export default function TrainerLab({
     }
   }, [preferredUnit]);
 
-  // Text Dataset Staging State
-  const [samples, setSamples] = useState<TrainingSample[]>(() => [...STARTER_TRAINING_CORPUS]);
+  // Text Dataset Staging State (hydrated per-user from localStorage so CSVs & edits persist)
+  const [samples, setSamples] = useState<TrainingSample[]>(() => loadUserTrainerSamples(currentUserUid));
   const [labelFilter, setLabelFilter] = useState<'all' | EmailLabel>('all');
+  const [tierFilter, setTierFilter] = useState<'all' | GranularThreatTier>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddSample, setShowAddSample] = useState(false);
   const [newSubject, setNewSubject] = useState('');
@@ -78,8 +124,17 @@ export default function TrainerLab({
   const [newBody, setNewBody] = useState('');
   const [newLabel, setNewLabel] = useState<EmailLabel>('phishing');
 
-  // Image Dataset Staging State
-  const [imageSamples, setImageSamples] = useState<ImageTrainingSample[]>([]);
+  // Pre-insert CSV/JSON upload preview modal state
+  const [pendingCsvModal, setPendingCsvModal] = useState<PendingCsvModalState | null>(null);
+  const [modalTierFilter, setModalTierFilter] = useState<'all' | GranularThreatTier>('all');
+  const [alsoSyncToOtherSections, setAlsoSyncToOtherSections] = useState(true);
+
+  // Image Dataset Staging State (hydrated per-user from localStorage)
+  const [imageSamples, setImageSamples] = useState<ImageTrainingSample[]>(() => {
+    const saved = loadUserTrainerImages(currentUserUid);
+    return saved !== null ? saved : [];
+  });
+  const [imagesHydrated, setImagesHydrated] = useState<boolean>(() => loadUserTrainerImages(currentUserUid) !== null);
   const [imageFilter, setImageFilter] = useState<'all' | EmailLabel>('all');
   const [imageSearch, setImageSearch] = useState('');
   const [uploadImageLabel, setUploadImageLabel] = useState<EmailLabel>('phishing');
@@ -103,7 +158,11 @@ export default function TrainerLab({
   const [liveImageHistory, setLiveImageHistory] = useState<EpochTelemetry[]>(
     () => activeModel?.imageUnit?.history || []
   );
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{
+    type: 'success' | 'error';
+    text: string;
+    action?: 'train_text';
+  } | null>(null);
 
   // Weight Inspector Tab
   const [inspectorClass, setInspectorClass] = useState<EmailLabel>('phishing');
@@ -118,26 +177,62 @@ export default function TrainerLab({
   const modelImportRef = useRef<HTMLInputElement>(null);
   const imageUploadRef = useRef<HTMLInputElement>(null);
   const imageProbeRef = useRef<HTMLInputElement>(null);
+  const loadedUidRef = useRef<string>(currentUserUid);
 
-  // Seed 12 canvas-generated starter images on mount for Image Training Unit
+  // Reload datasets cleanly if user switches account UID
   useEffect(() => {
+    if (loadedUidRef.current === currentUserUid) return;
+    loadedUidRef.current = currentUserUid;
+    setSamples(loadUserTrainerSamples(currentUserUid));
+    const savedImgs = loadUserTrainerImages(currentUserUid);
+    if (savedImgs !== null) {
+      setImageSamples(savedImgs);
+      setImagesHydrated(true);
+    } else {
+      setImageSamples([]);
+      setImagesHydrated(false);
+    }
+  }, [currentUserUid]);
+
+  // Persist text dataset whenever user uploads CSV, adds, re-labels, or removes samples
+  useEffect(() => {
+    if (!currentUserUid) return;
+    saveUserTrainerSamples(currentUserUid, samples);
+  }, [samples, currentUserUid]);
+
+  // Seed 12 starter images only when user has no persisted image dataset yet
+  useEffect(() => {
+    if (imagesHydrated) {
+      if (imageSamples.length > 0 && !imageProbeSample) {
+        const defaultProbe = imageSamples[8] || imageSamples[0];
+        setImageProbeSample(defaultProbe);
+        setImageProbeOcr(defaultProbe.ocrText);
+      }
+      return;
+    }
+
     let mounted = true;
     generateStarterImageSamples().then(starterImgs => {
       if (!mounted) return;
-      setImageSamples(prev => {
-        const existingIds = new Set(prev.map(p => p.id));
-        const additions = starterImgs.filter(s => !existingIds.has(s.id));
-        return [...prev, ...additions];
-      });
+      setImageSamples(starterImgs);
+      saveUserTrainerImages(currentUserUid, starterImgs);
+      setImagesHydrated(true);
       if (starterImgs.length > 0) {
-        setImageProbeSample(prev => prev || starterImgs[8] || starterImgs[0]);
-        setImageProbeOcr(prev => prev || starterImgs[8]?.ocrText || starterImgs[0].ocrText);
+        const defaultProbe = starterImgs[8] || starterImgs[0];
+        setImageProbeSample(prev => prev || defaultProbe);
+        setImageProbeOcr(prev => prev || defaultProbe.ocrText);
       }
     });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [imagesHydrated, currentUserUid]);
+
+  // Persist image dataset changes after hydration
+  useEffect(() => {
+    if (!currentUserUid || !imagesHydrated) return;
+    saveUserTrainerImages(currentUserUid, imageSamples);
+  }, [imageSamples, currentUserUid, imagesHydrated]);
 
   // Merge incoming email samples sent from Mail Body Scanner
   useEffect(() => {
@@ -157,6 +252,7 @@ export default function TrainerLab({
       const newOnes = incomingImageSamples.filter(s => !existing.has(s.id));
       return newOnes.length > 0 ? [...newOnes, ...prev] : prev;
     });
+    setImagesHydrated(true);
   }, [incomingImageSamples]);
 
   const hasTrainedTextUnit = Boolean(
@@ -164,7 +260,7 @@ export default function TrainerLab({
   );
   const activeImageUnit = activeModel?.imageUnit || null;
 
-  // Text class counts
+  // Text class counts & provenance (user uploads/imports/manual vs starter)
   const classCounts = useMemo(() => {
     const counts = { legitimate: 0, spam: 0, phishing: 0 };
     samples.forEach(s => {
@@ -173,7 +269,17 @@ export default function TrainerLab({
     return counts;
   }, [samples]);
 
-  // Image class counts
+  const textProvenance = useMemo(() => {
+    let custom = 0;
+    let starter = 0;
+    samples.forEach(s => {
+      if (s.source === 'starter') starter++;
+      else custom++;
+    });
+    return { custom, starter };
+  }, [samples]);
+
+  // Image class counts & provenance
   const imageClassCounts = useMemo(() => {
     const counts = { legitimate: 0, spam: 0, phishing: 0 };
     imageSamples.forEach(s => {
@@ -182,11 +288,25 @@ export default function TrainerLab({
     return counts;
   }, [imageSamples]);
 
-  // Filtered text table rows
+  const imageProvenance = useMemo(() => {
+    let custom = 0;
+    let starter = 0;
+    imageSamples.forEach(s => {
+      if (s.source === 'starter') starter++;
+      else custom++;
+    });
+    return { custom, starter };
+  }, [imageSamples]);
+
+  // Filtered text table rows (supports both base label filter & granular tier filter)
   const filteredSamples = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return samples.filter(s => {
       if (labelFilter !== 'all' && s.label !== labelFilter) return false;
+      const tier =
+        s.granularTier ||
+        classifyGranularEmailTier(s.subject, s.body, s.sender, s.rawHeaders || '', s.label).granularTier;
+      if (tierFilter !== 'all' && tier !== tierFilter) return false;
       if (!q) return true;
       return (
         s.subject.toLowerCase().includes(q) ||
@@ -194,7 +314,7 @@ export default function TrainerLab({
         s.body.toLowerCase().includes(q)
       );
     });
-  }, [samples, labelFilter, searchQuery]);
+  }, [samples, labelFilter, tierFilter, searchQuery]);
 
   // Filtered image rows
   const filteredImageSamples = useMemo(() => {
@@ -223,7 +343,7 @@ export default function TrainerLab({
 
   const latestTelemetry = chartHistory.length > 0 ? chartHistory[chartHistory.length - 1] : null;
 
-  // Upload CSV or JSON text dataset
+  // Upload CSV or JSON text dataset -> Evaluate & Open Pre-Insert Breakdown Popup Modal FIRST
   const handleDatasetUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -241,10 +361,38 @@ export default function TrainerLab({
           });
           return;
         }
-        setSamples(prev => [...parsed, ...prev]);
-        setStatusMessage({
-          type: 'success',
-          text: `Ingested ${parsed.length} labeled text samples from "${file.name}".`
+
+        // Enrich every parsed email using real local model/heuristic engine for accurate granular tier counts
+        const analyzedRows: PendingCsvRow[] = parsed.map(item => {
+          const evalRes = analyzeEmailWithModel(
+            item.subject,
+            item.body,
+            item.rawHeaders || `From: ${item.sender}`,
+            item.sender
+          );
+          const tierInfo = classifyGranularEmailTier(
+            item.subject,
+            item.body,
+            item.sender,
+            item.rawHeaders || '',
+            item.granularTier || item.label,
+            evalRes.metrics.spamScore,
+            evalRes.metrics.phishingLikelihood
+          );
+          return {
+            ...item,
+            label: tierInfo.baseLabel,
+            granularTier: tierInfo.granularTier,
+            evaluatedScore: evalRes.metrics.spamScore,
+            evaluatedPhishingScore: evalRes.metrics.phishingLikelihood,
+            included: true
+          };
+        });
+
+        setModalTierFilter('all');
+        setPendingCsvModal({
+          fileName: file.name,
+          rows: analyzedRows
         });
       } catch (err: any) {
         setStatusMessage({
@@ -255,6 +403,122 @@ export default function TrainerLab({
     };
     reader.readAsText(file);
     e.target.value = '';
+  };
+
+  // Modal summary counts across core classes & 6 granular categories
+  const modalBreakdown = useMemo(() => {
+    if (!pendingCsvModal) return null;
+    const rows = pendingCsvModal.rows;
+    const includedRows = rows.filter(r => r.included);
+    const byClass: Record<EmailLabel, number> = { legitimate: 0, spam: 0, phishing: 0 };
+    const byTier: Record<GranularThreatTier, number> = {
+      complete_legitimate: 0,
+      suspicious: 0,
+      spam: 0,
+      highly_spam: 0,
+      phishing: 0,
+      highly_phishing: 0
+    };
+    rows.forEach(r => {
+      byClass[r.label] = (byClass[r.label] || 0) + 1;
+      const tier = r.granularTier || 'spam';
+      byTier[tier] = (byTier[tier] || 0) + 1;
+    });
+    return {
+      total: rows.length,
+      includedCount: includedRows.length,
+      byClass,
+      byTier
+    };
+  }, [pendingCsvModal]);
+
+  const handleConfirmPendingCsvInsert = async (trainImmediately = false) => {
+    if (!pendingCsvModal) return;
+    const fileName = pendingCsvModal.fileName;
+    const selected = pendingCsvModal.rows
+      .filter(r => r.included)
+      .map(({ included: _included, ...sample }) => sample);
+
+    if (selected.length === 0) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Select at least one email row before inserting into the Trainer dataset.'
+      });
+      return;
+    }
+
+    const nextSamples = [...selected, ...samples];
+    setSamples(nextSamples);
+
+    if (alsoSyncToOtherSections && onArchiveUploadedCsvEmails) {
+      onArchiveUploadedCsvEmails(selected);
+    }
+
+    setPendingCsvModal(null);
+
+    if (trainImmediately) {
+      if (nextSamples.length < 4) {
+        setStatusMessage({
+          type: 'error',
+          text: `Inserted ${selected.length} email(s) from "${fileName}", but at least 4 total emails are required to train.`
+        });
+        return;
+      }
+      await runTextTraining(
+        nextSamples,
+        `Inserted ${selected.length} email(s) from "${fileName}" and trained Text Model`
+      );
+      return;
+    }
+
+    setStatusMessage({
+      type: 'success',
+      text: `Staged ${selected.length} persisted email(s) from "${fileName}" into Trainer Dataset${alsoSyncToOtherSections ? ' and synced to Personal Audit Stream & Batch CSV Auditor' : ''}. Click "Train Text Model" to update model weights with these emails.`,
+      action: 'train_text'
+    });
+  };
+
+  const handleUpdateModalRowLabel = (rowId: string, nextLabel: EmailLabel) => {
+    setPendingCsvModal(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        rows: prev.rows.map(r => {
+          if (r.id !== rowId) return r;
+          const tierInfo = classifyGranularEmailTier(
+            r.subject,
+            r.body,
+            r.sender,
+            r.rawHeaders || '',
+            nextLabel,
+            r.evaluatedScore,
+            r.evaluatedPhishingScore
+          );
+          return { ...r, label: nextLabel, granularTier: tierInfo.granularTier };
+        })
+      };
+    });
+  };
+
+  const handleUpdateModalRowTier = (rowId: string, nextTier: GranularThreatTier) => {
+    setPendingCsvModal(prev => {
+      if (!prev) return null;
+      const baseLabel = GRANULAR_TIER_META[nextTier].baseClass;
+      return {
+        ...prev,
+        rows: prev.rows.map(r => (r.id === rowId ? { ...r, granularTier: nextTier, label: baseLabel } : r))
+      };
+    });
+  };
+
+  const handleToggleModalRow = (rowId: string) => {
+    setPendingCsvModal(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        rows: prev.rows.map(r => (r.id === rowId ? { ...r, included: !r.included } : r))
+      };
+    });
   };
 
   // Upload real images into the Image Training Unit (supports multiple selection)
@@ -390,7 +654,45 @@ export default function TrainerLab({
 
   const handleDownloadSampleTemplate = () => {
     const header = 'subject,body,sender,label';
-    const rows = STARTER_TRAINING_CORPUS.slice(0, 6).map(s => {
+    const templateRows = [
+      {
+        subject: STARTER_TRAINING_CORPUS[0].subject,
+        body: STARTER_TRAINING_CORPUS[0].body,
+        sender: STARTER_TRAINING_CORPUS[0].sender,
+        label: 'complete legitimate'
+      },
+      {
+        subject: STARTER_TRAINING_CORPUS[1].subject,
+        body: STARTER_TRAINING_CORPUS[1].body,
+        sender: STARTER_TRAINING_CORPUS[1].sender,
+        label: 'legitimate'
+      },
+      {
+        subject: STARTER_TRAINING_CORPUS[9].subject,
+        body: STARTER_TRAINING_CORPUS[9].body,
+        sender: STARTER_TRAINING_CORPUS[9].sender,
+        label: 'spam'
+      },
+      {
+        subject: STARTER_TRAINING_CORPUS[8].subject,
+        body: STARTER_TRAINING_CORPUS[8].body,
+        sender: STARTER_TRAINING_CORPUS[8].sender,
+        label: 'highly spam'
+      },
+      {
+        subject: STARTER_TRAINING_CORPUS[20].subject,
+        body: STARTER_TRAINING_CORPUS[20].body,
+        sender: STARTER_TRAINING_CORPUS[20].sender,
+        label: 'phishing'
+      },
+      {
+        subject: STARTER_TRAINING_CORPUS[16].subject,
+        body: STARTER_TRAINING_CORPUS[16].body,
+        sender: STARTER_TRAINING_CORPUS[16].sender,
+        label: 'highly phishing'
+      }
+    ];
+    const rows = templateRows.map(s => {
       const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
       return [esc(s.subject), esc(s.body), esc(s.sender), esc(s.label)].join(',');
     });
@@ -409,12 +711,21 @@ export default function TrainerLab({
   const handleAddManualSample = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSubject.trim() || !newBody.trim()) return;
+    const classified = classifyGranularEmailTier(
+      newSubject.trim(),
+      newBody.trim(),
+      newSender.trim() || 'analyst@organization.com',
+      '',
+      newLabel
+    );
     const item: TrainingSample = {
       id: `manual-${Date.now()}`,
       subject: newSubject.trim(),
       sender: newSender.trim() || 'analyst@organization.com',
       body: newBody.trim(),
       label: newLabel,
+      granularTier: classified.granularTier,
+      evaluatedScore: classified.severityScore,
       source: 'manual'
     };
     setSamples(prev => [item, ...prev]);
@@ -422,11 +733,17 @@ export default function TrainerLab({
     setNewSender('');
     setNewBody('');
     setShowAddSample(false);
-    setStatusMessage({ type: 'success', text: `Added manual sample labeled "${newLabel}".` });
+    setStatusMessage({ type: 'success', text: `Added manual sample labeled "${newLabel}" (${GRANULAR_TIER_META[classified.granularTier].label}).` });
   };
 
   const handleUpdateSampleLabel = (id: string, updatedLabel: EmailLabel) => {
-    setSamples(prev => prev.map(s => (s.id === id ? { ...s, label: updatedLabel } : s)));
+    setSamples(prev =>
+      prev.map(s => {
+        if (s.id !== id) return s;
+        const classified = classifyGranularEmailTier(s.subject, s.body, s.sender, s.rawHeaders || '', updatedLabel, s.evaluatedScore);
+        return { ...s, label: updatedLabel, granularTier: classified.granularTier };
+      })
+    );
   };
 
   const handleRemoveSample = (id: string) => {
@@ -468,9 +785,9 @@ export default function TrainerLab({
   };
 
   // Run 100% client-side Text ML training
-  const handleTrainTextModel = async () => {
+  const runTextTraining = async (targetDataset: TrainingSample[], prefixMsg?: string) => {
     setStatusMessage(null);
-    if (samples.length < 4) {
+    if (targetDataset.length < 4) {
       setStatusMessage({ type: 'error', text: 'Add at least 4 labeled emails before training the Text Unit.' });
       return;
     }
@@ -482,7 +799,7 @@ export default function TrainerLab({
 
     try {
       const trained = await trainLocalClassifier(
-        samples,
+        targetDataset,
         currentUserUid,
         {
           trainSplitRatio: trainSplitPct / 100,
@@ -497,16 +814,46 @@ export default function TrainerLab({
         activeModel?.imageUnit
       );
 
+      const customUsed = targetDataset.filter(s => s.source !== 'starter').length;
+      const starterUsed = targetDataset.length - customUsed;
+      const corpusSummary =
+        customUsed > 0
+          ? `${trained.datasetSize} emails (${customUsed} yours + ${starterUsed} starter)`
+          : `${trained.datasetSize} emails`;
+
       onModelUpdated(trained);
       setStatusMessage({
         type: 'success',
-        text: `Text Classifier trained (${trained.vocabularySize} tokens, ${(trained.evaluation.accuracy * 100).toFixed(1)}% test accuracy) and activated across all scanners.`
+        text: `${prefixMsg || 'Text Classifier trained'} on ${corpusSummary} -> ${trained.vocabularySize} learned tokens, ${(trained.evaluation.accuracy * 100).toFixed(1)}% held-out accuracy. Active across Scanner, Batch CSV, Dashboard & Accuracy Matrix.`
       });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err?.message || 'Text model training failed.' });
     } finally {
       setIsTraining(false);
     }
+  };
+
+  const handleTrainTextModel = () => runTextTraining(samples);
+
+  const handleKeepOnlyCustomTextSamples = () => {
+    const customOnly = samples.filter(s => s.source !== 'starter');
+    if (customOnly.length === 0) return;
+    setSamples(customOnly);
+    setStatusMessage({
+      type: 'success',
+      text: `Removed starter baseline rows. Staging now contains strictly your ${customOnly.length} custom/uploaded sample(s). Click "Train Text Model" to train exclusively on your dataset.`,
+      action: customOnly.length >= 4 ? 'train_text' : undefined
+    });
+  };
+
+  const handleKeepOnlyCustomImages = () => {
+    const customOnly = imageSamples.filter(s => s.source !== 'starter');
+    if (customOnly.length === 0) return;
+    setImageSamples(customOnly);
+    setStatusMessage({
+      type: 'success',
+      text: `Removed starter images. Staging now contains strictly your ${customOnly.length} uploaded image sample(s).`
+    });
   };
 
   // Run 100% client-side Image ML training
@@ -761,7 +1108,7 @@ export default function TrainerLab({
                 Text Engine:{' '}
                 <strong className={hasTrainedTextUnit ? 'text-[#137333]' : 'text-[#1a73e8]'}>
                   {hasTrainedTextUnit
-                    ? `Trained (${activeModel?.vocabularySize} tokens · ${((activeModel?.evaluation.accuracy || 0) * 100).toFixed(1)}% Acc)`
+                    ? `Trained on ${activeModel?.datasetSize} msgs (${activeModel?.vocabularySize} tokens · ${((activeModel?.evaluation.accuracy || 0) * 100).toFixed(1)}% Acc)`
                     : 'Baseline Heuristics'}
                 </strong>
               </span>
@@ -770,8 +1117,17 @@ export default function TrainerLab({
                 Image Unit:{' '}
                 <strong className={activeImageUnit ? 'text-[#137333]' : 'text-[#1a73e8]'}>
                   {activeImageUnit
-                    ? `Trained (${activeImageUnit.datasetSize} imgs · ${(activeImageUnit.evaluation.accuracy * 100).toFixed(1)}% Acc)`
+                    ? `Trained on ${activeImageUnit.datasetSize} imgs (${(activeImageUnit.evaluation.accuracy * 100).toFixed(1)}% Acc)`
                     : 'Baseline Pixel Heuristics'}
+                </strong>
+              </span>
+              <span aria-hidden="true">&middot;</span>
+              <span>
+                Staged:{' '}
+                <strong className="text-[#202124]">
+                  {trainerUnit === 'text'
+                    ? `${textProvenance.custom} yours + ${textProvenance.starter} starter`
+                    : `${imageProvenance.custom} yours + ${imageProvenance.starter} starter`}
                 </strong>
               </span>
             </div>
@@ -869,18 +1225,31 @@ export default function TrainerLab({
       {/* Inline Status / Error Banner */}
       {statusMessage && (
         <div
-          className={`p-3.5 rounded-xl border text-xs flex items-start gap-2.5 ${
+          className={`p-3.5 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2.5 ${
             statusMessage.type === 'error'
               ? 'bg-[#fce8e6] border-[#fad2cf] text-[#c5221f]'
               : 'bg-[#e6f4ea] border-[#a8dab5] text-[#137333]'
           }`}
         >
-          {statusMessage.type === 'error' ? (
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          ) : (
-            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex items-start gap-2.5">
+            {statusMessage.type === 'error' ? (
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            )}
+            <span>{statusMessage.text}</span>
+          </div>
+          {statusMessage.action === 'train_text' && samples.length >= 4 && (
+            <button
+              type="button"
+              disabled={isTraining}
+              onClick={handleTrainTextModel}
+              className="px-3.5 py-1.5 bg-[#137333] hover:bg-[#0d652d] text-white rounded-full text-[11px] font-medium transition flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <Play className="w-3 h-3" />
+              <span>Train Text Model Now</span>
+            </button>
           )}
-          <span>{statusMessage.text}</span>
         </div>
       )}
 
@@ -1397,6 +1766,17 @@ export default function TrainerLab({
                     <span>Template CSV</span>
                   </button>
 
+                  {textProvenance.custom > 0 && textProvenance.starter > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleKeepOnlyCustomTextSamples}
+                      className="px-3 py-2 bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] text-xs font-medium rounded-full transition cursor-pointer whitespace-nowrap shrink-0"
+                      title="Remove starter rows so the model trains exclusively on your uploaded/imported dataset"
+                    >
+                      Keep Only My Samples ({textProvenance.custom})
+                    </button>
+                  )}
+
                   {samples.length > 0 && (
                     <button
                       type="button"
@@ -1472,15 +1852,31 @@ export default function TrainerLab({
                   ))}
                 </div>
 
-                <div className="relative w-full sm:w-64">
-                  <Search className="w-3.5 h-3.5 text-[#5f6368] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    placeholder="Filter staged samples..."
-                    className="w-full bg-white border border-[#dadce0] pl-8 pr-3 py-1.5 rounded-full text-xs focus:outline-none focus:border-[#1a73e8]"
-                  />
+                <div className="flex items-center gap-2">
+                  <select
+                    value={tierFilter}
+                    onChange={e => setTierFilter(e.target.value as 'all' | GranularThreatTier)}
+                    aria-label="Filter by granular risk category"
+                    className="bg-white border border-[#dadce0] px-3 py-1.5 rounded-full text-xs focus:outline-none focus:border-[#1a73e8] cursor-pointer"
+                  >
+                    <option value="all">All Risk Tiers</option>
+                    {TIER_ORDER.map(t => (
+                      <option key={t} value={t}>
+                        {GRANULAR_TIER_META[t].label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="relative w-full sm:w-56">
+                    <Search className="w-3.5 h-3.5 text-[#5f6368] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Filter staged samples..."
+                      className="w-full bg-white border border-[#dadce0] pl-8 pr-3 py-1.5 rounded-full text-xs focus:outline-none focus:border-[#1a73e8]"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1491,57 +1887,75 @@ export default function TrainerLab({
                   <tr>
                     <th className="py-2.5 px-4">Subject &amp; Excerpt</th>
                     <th className="py-2.5 px-4">Sender</th>
+                    <th className="py-2.5 px-4">Granular Tier</th>
                     <th className="py-2.5 px-4">Source</th>
                     <th className="py-2.5 px-4">Class Label</th>
                     <th className="py-2.5 px-4 text-right">Remove</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#f1f3f4]">
-                  {filteredSamples.map(sample => (
-                    <tr key={sample.id} className="hover:bg-[#f8f9fa] transition">
-                      <td className="py-2.5 px-4 max-w-xs">
-                        <div className="font-medium text-[#202124] truncate">{sample.subject}</div>
-                        <div className="text-[11px] text-[#5f6368] truncate">{sample.body}</div>
-                      </td>
-                      <td className="py-2.5 px-4 font-mono text-[11px] text-[#5f6368] max-w-[170px] truncate">
-                        {sample.sender}
-                      </td>
-                      <td className="py-2.5 px-4 text-[11px] text-[#5f6368] capitalize whitespace-nowrap">
-                        {sample.source === 'audit_stream' ? 'Audit Stream' : sample.source || 'upload'}
-                      </td>
-                      <td className="py-2.5 px-4">
-                        <select
-                          value={sample.label}
-                          onChange={e => handleUpdateSampleLabel(sample.id, e.target.value as EmailLabel)}
-                          aria-label={`Label for ${sample.subject}`}
-                          className={`text-xs font-medium px-2.5 py-1 rounded-lg border cursor-pointer focus:outline-none ${
-                            sample.label === 'phishing'
-                              ? 'bg-[#fce8e6] border-[#fad2cf] text-[#c5221f]'
-                              : sample.label === 'spam'
-                              ? 'bg-[#fef7e0] border-[#fde293] text-[#b06000]'
-                              : 'bg-[#e6f4ea] border-[#a8dab5] text-[#137333]'
-                          }`}
-                        >
-                          <option value="legitimate">legitimate</option>
-                          <option value="spam">spam</option>
-                          <option value="phishing">phishing</option>
-                        </select>
-                      </td>
-                      <td className="py-2.5 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveSample(sample.id)}
-                          className="p-1.5 text-[#5f6368] hover:text-[#d93025] rounded-full hover:bg-[#fce8e6] transition cursor-pointer"
-                          title="Remove sample"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredSamples.map(sample => {
+                    const tier: GranularThreatTier =
+                      sample.granularTier ||
+                      classifyGranularEmailTier(
+                        sample.subject,
+                        sample.body,
+                        sample.sender,
+                        sample.rawHeaders || '',
+                        sample.label,
+                        sample.evaluatedScore
+                      ).granularTier;
+                    return (
+                      <tr key={sample.id} className="hover:bg-[#f8f9fa] transition">
+                        <td className="py-2.5 px-4 max-w-xs">
+                          <div className="font-medium text-[#202124] truncate">{sample.subject}</div>
+                          <div className="text-[11px] text-[#5f6368] truncate">{sample.body}</div>
+                        </td>
+                        <td className="py-2.5 px-4 font-mono text-[11px] text-[#5f6368] max-w-[160px] truncate">
+                          {sample.sender}
+                        </td>
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium ${getTierBadgeClasses(tier)}`}>
+                            {GRANULAR_TIER_META[tier].label}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-[11px] text-[#5f6368] capitalize whitespace-nowrap">
+                          {sample.source === 'audit_stream' ? 'Audit Stream' : sample.source || 'upload'}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          <select
+                            value={sample.label}
+                            onChange={e => handleUpdateSampleLabel(sample.id, e.target.value as EmailLabel)}
+                            aria-label={`Label for ${sample.subject}`}
+                            className={`text-xs font-medium px-2.5 py-1 rounded-lg border cursor-pointer focus:outline-none ${
+                              sample.label === 'phishing'
+                                ? 'bg-[#fce8e6] border-[#fad2cf] text-[#c5221f]'
+                                : sample.label === 'spam'
+                                ? 'bg-[#fef7e0] border-[#fde293] text-[#b06000]'
+                                : 'bg-[#e6f4ea] border-[#a8dab5] text-[#137333]'
+                            }`}
+                          >
+                            <option value="legitimate">legitimate</option>
+                            <option value="spam">spam</option>
+                            <option value="phishing">phishing</option>
+                          </select>
+                        </td>
+                        <td className="py-2.5 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSample(sample.id)}
+                            className="p-1.5 text-[#5f6368] hover:text-[#d93025] rounded-full hover:bg-[#fce8e6] transition cursor-pointer"
+                            title="Remove sample"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {filteredSamples.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="py-8 text-center text-[#5f6368]">
+                      <td colSpan={6} className="py-8 text-center text-[#5f6368]">
                         No training samples staged. Upload a CSV/JSON file, import from your Audit Stream, or load the starter corpus.
                       </td>
                     </tr>
@@ -1780,6 +2194,17 @@ export default function TrainerLab({
                     Load 12 Starter Images
                   </button>
 
+                  {imageProvenance.custom > 0 && imageProvenance.starter > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleKeepOnlyCustomImages}
+                      className="px-3 py-2 bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] text-xs font-medium rounded-full transition cursor-pointer whitespace-nowrap shrink-0"
+                      title="Remove starter images so the Image Unit trains exclusively on your uploaded images"
+                    >
+                      Keep Only My Images ({imageProvenance.custom})
+                    </button>
+                  )}
+
                   {imageSamples.length > 0 && (
                     <button
                       type="button"
@@ -1919,6 +2344,229 @@ export default function TrainerLab({
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================================ */}
+      {/* PRE-INSERT CSV / JSON UPLOAD BREAKDOWN & CONFIRMATION MODAL                  */}
+      {/* ============================================================================ */}
+      {pendingCsvModal && modalBreakdown && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="csv-preview-modal-title"
+          id="csv-upload-preview-modal"
+        >
+          <div className="bg-white border border-[#dadce0] rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-[#dadce0] bg-[#f8f9fa] flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-[#1a73e8] shrink-0" />
+                  <h3 id="csv-preview-modal-title" className="text-base font-medium text-[#202124] truncate">
+                    CSV Dataset Pre-Insert Inspection: {pendingCsvModal.fileName}
+                  </h3>
+                </div>
+                <p className="text-xs text-[#5f6368] mt-0.5 tabular-nums">
+                  {modalBreakdown.total} email(s) scanned &amp; categorized before adding to Trainer &amp; Vault ({modalBreakdown.includedCount} selected)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingCsvModal(null)}
+                className="p-2 text-[#5f6368] hover:text-[#202124] hover:bg-[#f1f3f4] rounded-full transition cursor-pointer shrink-0"
+                aria-label="Close CSV preview"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5 flex-1">
+              {/* Primary 3-Class Totals */}
+              <div className="grid grid-cols-3 gap-3 tabular-nums">
+                <div className="bg-[#e6f4ea] border border-[#a8dab5] rounded-xl p-3.5 text-center">
+                  <span className="text-[11px] font-medium text-[#137333] block">Legitimate Total</span>
+                  <span className="text-2xl font-semibold text-[#137333] font-mono">{modalBreakdown.byClass.legitimate}</span>
+                  <span className="text-[11px] text-[#137333] block">
+                    {((modalBreakdown.byClass.legitimate / Math.max(1, modalBreakdown.total)) * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="bg-[#fef7e0] border border-[#fde293] rounded-xl p-3.5 text-center">
+                  <span className="text-[11px] font-medium text-[#b06000] block">Spam Total</span>
+                  <span className="text-2xl font-semibold text-[#b06000] font-mono">{modalBreakdown.byClass.spam}</span>
+                  <span className="text-[11px] text-[#b06000] block">
+                    {((modalBreakdown.byClass.spam / Math.max(1, modalBreakdown.total)) * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="bg-[#fce8e6] border border-[#fad2cf] rounded-xl p-3.5 text-center">
+                  <span className="text-[11px] font-medium text-[#c5221f] block">Phishing Total</span>
+                  <span className="text-2xl font-semibold text-[#c5221f] font-mono">{modalBreakdown.byClass.phishing}</span>
+                  <span className="text-[11px] text-[#c5221f] block">
+                    {((modalBreakdown.byClass.phishing / Math.max(1, modalBreakdown.total)) * 100).toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Granular 6-Tier Threat Severity Breakdown (Clickable Filter Cards) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-[#202124]">Granular Category Breakdown (Click to filter preview)</span>
+                  {modalTierFilter !== 'all' && (
+                    <button
+                      type="button"
+                      onClick={() => setModalTierFilter('all')}
+                      className="text-[#1a73e8] hover:underline font-medium cursor-pointer"
+                    >
+                      Show All ({modalBreakdown.total})
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 tabular-nums">
+                  {TIER_ORDER.map(tier => {
+                    const count = modalBreakdown.byTier[tier] || 0;
+                    const pct = ((count / Math.max(1, modalBreakdown.total)) * 100).toFixed(0);
+                    const active = modalTierFilter === tier;
+                    return (
+                      <button
+                        key={tier}
+                        type="button"
+                        onClick={() => setModalTierFilter(prev => (prev === tier ? 'all' : tier))}
+                        className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                          active
+                            ? 'ring-2 ring-[#1a73e8] border-[#1a73e8] bg-[#e8f0fe]/40'
+                            : 'bg-[#f8f9fa] border-[#dadce0] hover:bg-[#f1f3f4]'
+                        }`}
+                      >
+                        <span className="text-[10px] font-medium text-[#5f6368] block truncate">
+                          {GRANULAR_TIER_META[tier].label}
+                        </span>
+                        <div className="flex items-baseline justify-between mt-1">
+                          <span className="text-lg font-semibold font-mono text-[#202124]">{count}</span>
+                          <span className="text-[10px] font-mono text-[#5f6368]">{pct}%</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Preview Table */}
+              <div className="border border-[#dadce0] rounded-xl overflow-hidden">
+                <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                  <table className="w-full text-left text-xs text-[#3c4043] tabular-nums">
+                    <thead className="bg-[#f8f9fa] text-[#5f6368] border-b border-[#dadce0] font-medium sticky top-0">
+                      <tr>
+                        <th className="py-2 px-3 w-8 text-center">Use</th>
+                        <th className="py-2 px-3">Subject &amp; Sender</th>
+                        <th className="py-2 px-3 text-right">Score</th>
+                        <th className="py-2 px-3">Granular Category</th>
+                        <th className="py-2 px-3">Training Class</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#f1f3f4]">
+                      {pendingCsvModal.rows
+                        .filter(r => modalTierFilter === 'all' || r.granularTier === modalTierFilter)
+                        .map(row => {
+                          const tier = row.granularTier || 'spam';
+                          return (
+                            <tr key={row.id} className="hover:bg-[#f8f9fa]">
+                              <td className="py-2 px-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={row.included}
+                                  onChange={() => handleToggleModalRow(row.id)}
+                                  className="accent-[#1a73e8] cursor-pointer"
+                                  aria-label={`Include ${row.subject}`}
+                                />
+                              </td>
+                              <td className="py-2 px-3 max-w-xs">
+                                <div className="font-medium text-[#202124] truncate">{row.subject}</div>
+                                <div className="text-[10px] font-mono text-[#5f6368] truncate">{row.sender}</div>
+                              </td>
+                              <td className="py-2 px-3 text-right font-mono font-semibold">
+                                <span className={(row.evaluatedScore || 0) >= 70 ? 'text-[#d93025]' : (row.evaluatedScore || 0) >= 45 ? 'text-[#e37400]' : 'text-[#137333]'}>
+                                  {row.evaluatedScore ?? '--'}%
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 whitespace-nowrap">
+                                <select
+                                  value={tier}
+                                  onChange={e => handleUpdateModalRowTier(row.id, e.target.value as GranularThreatTier)}
+                                  className={`text-[11px] font-medium px-2 py-1 rounded-lg border cursor-pointer focus:outline-none ${getTierBadgeClasses(tier)}`}
+                                >
+                                  {TIER_ORDER.map(t => (
+                                    <option key={t} value={t}>
+                                      {GRANULAR_TIER_META[t].label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="py-2 px-3 whitespace-nowrap">
+                                <select
+                                  value={row.label}
+                                  onChange={e => handleUpdateModalRowLabel(row.id, e.target.value as EmailLabel)}
+                                  className="text-[11px] font-medium bg-white border border-[#dadce0] px-2 py-1 rounded-lg cursor-pointer"
+                                >
+                                  <option value="legitimate">legitimate</option>
+                                  <option value="spam">spam</option>
+                                  <option value="phishing">phishing</option>
+                                </select>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Sync to Vault & Batch Auditor Option */}
+              <label className="flex items-center gap-2.5 p-3 bg-[#f8f9fa] border border-[#dadce0] rounded-xl text-xs text-[#202124] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={alsoSyncToOtherSections}
+                  onChange={e => setAlsoSyncToOtherSections(e.target.checked)}
+                  className="accent-[#1a73e8] cursor-pointer"
+                />
+                <span>
+                  Also save these uploaded emails to <strong>Personal Audit Stream</strong> &amp; <strong>Batch CSV Auditor</strong> so records stay saved across all testing sections.
+                </span>
+              </label>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-[#dadce0] bg-[#f8f9fa] flex flex-wrap items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPendingCsvModal(null)}
+                className="px-4 py-2 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] rounded-full text-xs font-medium transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmPendingCsvInsert(false)}
+                disabled={modalBreakdown.includedCount === 0}
+                className="px-4 py-2 bg-white hover:bg-[#e8f0fe] disabled:opacity-45 text-[#1a73e8] border border-[#dadce0] rounded-full text-xs font-medium transition flex items-center gap-1.5 cursor-pointer"
+                id="confirm-csv-insert-btn"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Insert {modalBreakdown.includedCount} Emails Only</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmPendingCsvInsert(true)}
+                disabled={modalBreakdown.includedCount === 0 || isTraining}
+                className="px-5 py-2 bg-[#137333] hover:bg-[#0d652d] disabled:opacity-45 text-white rounded-full text-xs font-medium transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                id="confirm-csv-insert-and-train-btn"
+              >
+                <Play className="w-3.5 h-3.5" />
+                <span>Insert {modalBreakdown.includedCount} &amp; Train Model Now</span>
+              </button>
             </div>
           </div>
         </div>

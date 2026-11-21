@@ -4,76 +4,205 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { 
-  Target, Activity, Cpu, CheckCircle2, AlertTriangle, 
-  XCircle, Zap, Play, RefreshCw, Download, 
+import {
+  Target, Activity, Cpu, CheckCircle2,
+  Zap, Play, RefreshCw, Download,
   TrendingUp, Layers, Check, ArrowUpRight, Copy, Table2, Search, Eye, Image as ImageIcon
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, 
+import {
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, BarChart, Bar, Cell, Legend
 } from 'recharts';
 import { EmailRecord, TrainedModelArtifact, EvaluatedTestCase, EmailLabel } from './types';
-import { STARTER_TRAINING_CORPUS } from './src/lib/localMlEngine';
+import {
+  extractEngineeredFeatures,
+  loadUserBatchRows,
+  loadUserTrainerSamples,
+  STARTER_TRAINING_CORPUS
+} from './src/lib/localMlEngine';
 import { analyzeEmailWithModel } from './spamEngine';
 import InfoButton from './src/components/InfoButton';
 
 interface PerformanceMetricsProps {
   records: EmailRecord[];
   activeModel?: TrainedModelArtifact | null;
+  currentUserUid?: string;
 }
 
-interface BenchmarkResult {
-  totalTested: number;
+type CopyFormat = 'aligned' | 'tsv' | 'markdown';
+type TestFilter = 'all' | 'passed' | 'errors' | 'TP' | 'TN' | 'FP' | 'FN';
+type EvalScope = 'all' | 'trainer_live' | 'model_test' | 'batch_vault';
+
+const CLASSES: EmailLabel[] = ['legitimate', 'spam', 'phishing'];
+
+interface LiveEvalOutput {
+  cases: EvaluatedTestCase[];
   tp: number;
   fp: number;
   tn: number;
   fn: number;
-  avgLatencyMs: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1Score: number;
+  specificity: number;
+  falsePositiveRate: number;
+  falseNegativeRate: number;
+  confusionMatrix3x3: number[][];
+  perClass: Record<EmailLabel, { precision: number; recall: number; f1: number; support: number }>;
+  rocCurve: { fpr: number; tpr: number }[];
   rocAUC: number;
-  moduleScores: {
-    ruleEngine: { precision: number; recall: number; f1: number };
-    imageOcr: { precision: number; recall: number; f1: number };
-    ragVerification: { precision: number; recall: number; f1: number };
-    headerDomainAuth: { precision: number; recall: number; f1: number };
+  avgLatencyMs: number;
+  throughputPerSec: number;
+  vectorLookupMs: number;
+  sourceLabel: string;
+}
+
+function buildMetricsFromCases(
+  cases: EvaluatedTestCase[],
+  elapsedMs: number,
+  vectorMs: number,
+  sourceLabel: string
+): LiveEvalOutput {
+  let tp = 0;
+  let fp = 0;
+  let tn = 0;
+  let fn = 0;
+
+  const confusionMatrix3x3: number[][] = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0]
+  ];
+  const classCounts = [
+    { tp: 0, fp: 0, fn: 0, support: 0 },
+    { tp: 0, fp: 0, fn: 0, support: 0 },
+    { tp: 0, fp: 0, fn: 0, support: 0 }
+  ];
+
+  const scoresForRoc: { score: number; isThreat: boolean }[] = [];
+
+  for (const tc of cases) {
+    const aIdx = Math.max(0, CLASSES.indexOf(tc.actualLabel));
+    const pIdx = Math.max(0, CLASSES.indexOf(tc.predictedLabel));
+    confusionMatrix3x3[aIdx][pIdx]++;
+    classCounts[aIdx].support++;
+    if (aIdx === pIdx) {
+      classCounts[aIdx].tp++;
+    } else {
+      classCounts[pIdx].fp++;
+      classCounts[aIdx].fn++;
+    }
+
+    if (tc.outcome === 'TP') tp++;
+    else if (tc.outcome === 'FP') fp++;
+    else if (tc.outcome === 'TN') tn++;
+    else fn++;
+
+    scoresForRoc.push({
+      score: Math.max(0, Math.min(1, tc.spamScore / 100)),
+      isThreat: tc.actualLabel !== 'legitimate'
+    });
+  }
+
+  const total = tp + fp + tn + fn;
+  const accuracy = total > 0 ? (tp + tn) / total : 0;
+  const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
+  const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
+  const f1Score = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
+  const specificity = tn + fp > 0 ? tn / (tn + fp) : 0;
+  const falsePositiveRate = fp + tn > 0 ? fp / (fp + tn) : 0;
+  const falseNegativeRate = fn + tp > 0 ? fn / (fn + tp) : 0;
+
+  const buildPerClass = (m: { tp: number; fp: number; fn: number; support: number }) => {
+    const p = m.tp + m.fp > 0 ? m.tp / (m.tp + m.fp) : m.support === 0 ? 0 : 0;
+    const r = m.tp + m.fn > 0 ? m.tp / (m.tp + m.fn) : m.support === 0 ? 0 : 0;
+    const f = p + r > 0 ? (2 * p * r) / (p + r) : 0;
+    return {
+      precision: Number(p.toFixed(4)),
+      recall: Number(r.toFixed(4)),
+      f1: Number(f.toFixed(4)),
+      support: m.support
+    };
+  };
+
+  const perClass: Record<EmailLabel, { precision: number; recall: number; f1: number; support: number }> = {
+    legitimate: buildPerClass(classCounts[0]),
+    spam: buildPerClass(classCounts[1]),
+    phishing: buildPerClass(classCounts[2])
+  };
+
+  // Real ROC curve swept over threshold cutoffs 1.0 -> 0.0
+  const totalPos = scoresForRoc.filter(s => s.isThreat).length;
+  const totalNeg = scoresForRoc.filter(s => !s.isThreat).length;
+  const thresholds = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0];
+  let rocCurve =
+    totalPos > 0 && totalNeg > 0
+      ? thresholds.map(th => {
+          let tPos = 0;
+          let fPos = 0;
+          for (const item of scoresForRoc) {
+            if (item.score >= th) {
+              if (item.isThreat) tPos++;
+              else fPos++;
+            }
+          }
+          return {
+            fpr: Number((fPos / totalNeg).toFixed(3)),
+            tpr: Number((tPos / totalPos).toFixed(3))
+          };
+        })
+      : [
+          { fpr: 0, tpr: 0 },
+          { fpr: 1, tpr: 1 }
+        ];
+
+  rocCurve = rocCurve.sort((a, b) => a.fpr - b.fpr || a.tpr - b.tpr);
+
+  let rocAUC = 0;
+  for (let i = 1; i < rocCurve.length; i++) {
+    const dx = rocCurve[i].fpr - rocCurve[i - 1].fpr;
+    const avgY = (rocCurve[i].tpr + rocCurve[i - 1].tpr) / 2;
+    rocAUC += dx * avgY;
+  }
+  rocAUC = total > 0 ? Number(Math.max(0, Math.min(1, rocAUC)).toFixed(3)) : 0;
+
+  const safeElapsed = Math.max(0.1, elapsedMs);
+  const countForTiming = Math.max(1, total);
+  const avgLatencyMs = Number((safeElapsed / countForTiming).toFixed(2));
+  const throughputPerSec = Math.max(1, Math.round((countForTiming / safeElapsed) * 1000));
+  const vectorLookupMs = Number((Math.max(0.05, vectorMs) / countForTiming).toFixed(2));
+
+  return {
+    cases,
+    tp,
+    fp,
+    tn,
+    fn,
+    accuracy,
+    precision,
+    recall,
+    f1Score,
+    specificity,
+    falsePositiveRate,
+    falseNegativeRate,
+    confusionMatrix3x3,
+    perClass,
+    rocCurve,
+    rocAUC,
+    avgLatencyMs,
+    throughputPerSec,
+    vectorLookupMs,
+    sourceLabel
   };
 }
 
-const INITIAL_BENCHMARK: BenchmarkResult = {
-  totalTested: 2450,
-  tp: 1180,
-  fp: 18,
-  tn: 1238,
-  fn: 14,
-  avgLatencyMs: 138,
-  rocAUC: 0.988,
-  moduleScores: {
-    ruleEngine: { precision: 0.985, recall: 0.978, f1: 0.981 },
-    imageOcr: { precision: 0.962, recall: 0.945, f1: 0.953 },
-    ragVerification: { precision: 0.991, recall: 0.984, f1: 0.987 },
-    headerDomainAuth: { precision: 0.998, recall: 0.992, f1: 0.995 }
-  }
-};
-
-const ROC_CURVE_DATA = [
-  { fpr: 0, tpr: 0 },
-  { fpr: 0.005, tpr: 0.82 },
-  { fpr: 0.010, tpr: 0.92 },
-  { fpr: 0.015, tpr: 0.96 },
-  { fpr: 0.020, tpr: 0.985 },
-  { fpr: 0.035, tpr: 0.992 },
-  { fpr: 0.050, tpr: 0.996 },
-  { fpr: 0.100, tpr: 0.999 },
-  { fpr: 1.000, tpr: 1.000 }
-];
-
-type CopyFormat = 'aligned' | 'tsv' | 'markdown';
-type TestFilter = 'all' | 'passed' | 'errors' | 'TP' | 'TN' | 'FP' | 'FN';
-
-export default function PerformanceMetrics({ records, activeModel }: PerformanceMetricsProps) {
-  const [benchmark, setBenchmark] = useState<BenchmarkResult>(INITIAL_BENCHMARK);
+export default function PerformanceMetrics({ records, activeModel, currentUserUid }: PerformanceMetricsProps) {
+  const [evalScope, setEvalScope] = useState<EvalScope>('all');
+  const [benchmarkTick, setBenchmarkTick] = useState(0);
   const [isRunningBenchmark, setIsRunningBenchmark] = useState(false);
   const [benchmarkProgress, setBenchmarkProgress] = useState(0);
+  const [lastBenchmarkBanner, setLastBenchmarkBanner] = useState<string | null>(null);
 
   // Confusion matrix mode (2x2 binary threat matrix vs 3x3 multi-class matrix)
   const [matrixMode, setMatrixMode] = useState<'2x2' | '3x3'>('2x2');
@@ -85,126 +214,113 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
   const [copiedBanner, setCopiedBanner] = useState<string | null>(null);
   const [showPlainPreview, setShowPlainPreview] = useState(false);
 
-  // Compute live calculations incorporating active trained local model + user's active records
-  const liveMetrics = useMemo(() => {
-    let tp = activeModel ? activeModel.evaluation.tp : benchmark.tp;
-    let fp = activeModel ? activeModel.evaluation.fp : benchmark.fp;
-    let tn = activeModel ? activeModel.evaluation.tn : benchmark.tn;
-    let fn = activeModel ? activeModel.evaluation.fn : benchmark.fn;
+  const hasCustomTextModel = Boolean(
+    activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0)
+  );
 
-    records.forEach(rec => {
-      const predictedSpam = rec.metrics.spamScore >= 50;
-      const actualSpam = rec.isSpam;
+  // 100% Real Dynamic Evaluation over User's Trained Model Test Split, Saved Batch CSV, Vault & Staged Trainer Corpus
+  const liveEval = useMemo<LiveEvalOutput>(() => {
+    const startTotal = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    let vectorMsAccum = 0;
 
-      if (predictedSpam && actualSpam) tp += 1;
-      else if (predictedSpam && !actualSpam) fp += 1;
-      else if (!predictedSpam && !actualSpam) tn += 1;
-      else if (!predictedSpam && actualSpam) fn += 1;
+    const stagedSamples = currentUserUid
+      ? loadUserTrainerSamples(currentUserUid)
+      : [...STARTER_TRAINING_CORPUS];
+    const batchRows = currentUserUid ? loadUserBatchRows(currentUserUid) || [] : [];
+
+    const evaluateRawSample = (
+      id: string,
+      subject: string,
+      body: string,
+      sender: string,
+      rawHeaders: string | undefined,
+      actualLabel: EmailLabel,
+      source: EvaluatedTestCase['source']
+    ): EvaluatedTestCase => {
+      const headers = rawHeaders || `From: ${sender}\nDKIM: Pass\nSPF: Pass`;
+      const v0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      extractEngineeredFeatures(subject, body, sender, headers);
+      vectorMsAccum += (typeof performance !== 'undefined' ? performance.now() : Date.now()) - v0;
+
+      const res = analyzeEmailWithModel(subject, body, headers, sender);
+      const actualThreat = actualLabel !== 'legitimate';
+      const predThreat = res.metrics.spamScore >= 50 || res.metrics.phishingLikelihood >= 55;
+      const predictedLabel: EmailLabel = res.modelPrediction
+        ? res.modelPrediction.predictedLabel
+        : predThreat
+        ? res.metrics.phishingLikelihood >= 55
+          ? 'phishing'
+          : 'spam'
+        : 'legitimate';
+
+      const outcome: 'TP' | 'TN' | 'FP' | 'FN' =
+        predThreat && actualThreat
+          ? 'TP'
+          : predThreat && !actualThreat
+          ? 'FP'
+          : !predThreat && !actualThreat
+          ? 'TN'
+          : 'FN';
+
+      return {
+        id,
+        subject,
+        sender,
+        actualLabel,
+        predictedLabel,
+        spamScore: res.metrics.spamScore,
+        confidence: predThreat ? res.metrics.spamScore : 100 - res.metrics.spamScore,
+        outcome,
+        correct: outcome === 'TP' || outcome === 'TN',
+        source
+      };
+    };
+
+    // Build Batch CSV cases (explicit ground-truth labels)
+    const batchCases: EvaluatedTestCase[] = batchRows.map((row: any, idx: number) => {
+      const actualLabel: EmailLabel =
+        row.actualLabel || (row.actual === 'ham' ? 'legitimate' : 'spam');
+      return evaluateRawSample(
+        row.id || `batch-${idx + 1}`,
+        row.subject || '(No Subject)',
+        row.body || '',
+        row.sender || 'unknown@sender.org',
+        row.rawHeaders,
+        actualLabel,
+        'batch_csv'
+      );
     });
 
-    const total = tp + fp + tn + fn;
-    const accuracy = total > 0 ? (tp + tn) / total : 0;
-    const precision = (tp + fp) > 0 ? tp / (tp + fp) : 0;
-    const recall = (tp + fn) > 0 ? tp / (tp + fn) : 0;
-    const f1Score = (precision + recall) > 0 ? (2 * precision * recall) / (precision + recall) : 0;
-    const specificity = (tn + fp) > 0 ? tn / (tn + fp) : 0;
-    const falsePositiveRate = (fp + tn) > 0 ? fp / (fp + tn) : 0;
-    const falseNegativeRate = (fn + tp) > 0 ? fn / (fn + tp) : 0;
-
-    return {
-      total,
-      tp,
-      fp,
-      tn,
-      fn,
-      accuracy,
-      precision,
-      recall,
-      f1Score,
-      specificity,
-      falsePositiveRate,
-      falseNegativeRate
-    };
-  }, [records, benchmark, activeModel]);
-
-  const activeRocData = activeModel && activeModel.evaluation.rocCurve.length > 0
-    ? activeModel.evaluation.rocCurve
-    : ROC_CURVE_DATA;
-  const activeRocAuc = activeModel ? activeModel.evaluation.rocAUC : benchmark.rocAUC;
-
-  // Bar Graph 1: Overall Performance Summary (%)
-  const overallPerformanceBarData = useMemo(() => [
-    { metric: 'Accuracy', score: Number((liveMetrics.accuracy * 100).toFixed(1)), fill: '#1e8e3e' },
-    { metric: 'Precision', score: Number((liveMetrics.precision * 100).toFixed(1)), fill: '#1a73e8' },
-    { metric: 'Recall', score: Number((liveMetrics.recall * 100).toFixed(1)), fill: '#0284c7' },
-    { metric: 'F1 Score', score: Number((liveMetrics.f1Score * 100).toFixed(1)), fill: '#4f46e5' },
-    { metric: 'Specificity', score: Number((liveMetrics.specificity * 100).toFixed(1)), fill: '#0d9488' },
-    { metric: 'ROC AUC', score: Number((activeRocAuc * 100).toFixed(1)), fill: '#e37400' }
-  ], [liveMetrics, activeRocAuc]);
-
-  // Bar Graph 2: Detection Rates vs Error Rates (%)
-  const ratesComparisonBarData = useMemo(() => [
-    { rate: 'True Positive Rate', value: Number((liveMetrics.recall * 100).toFixed(1)), fill: '#1e8e3e' },
-    { rate: 'True Negative Rate', value: Number((liveMetrics.specificity * 100).toFixed(1)), fill: '#1a73e8' },
-    { rate: 'False Positive Rate', value: Number((liveMetrics.falsePositiveRate * 100).toFixed(1)), fill: '#e37400' },
-    { rate: 'False Negative Rate', value: Number((liveMetrics.falseNegativeRate * 100).toFixed(1)), fill: '#d93025' }
-  ], [liveMetrics]);
-
-  // Bar Graph 3: Class-wise / Sub-module Precision, Recall & F1 Comparison (%)
-  const moduleBarData = activeModel
-    ? [
-        {
-          name: 'Legitimate',
-          f1: Math.round(activeModel.evaluation.perClass.legitimate.f1 * 100),
-          precision: Math.round(activeModel.evaluation.perClass.legitimate.precision * 100),
-          recall: Math.round(activeModel.evaluation.perClass.legitimate.recall * 100)
-        },
-        {
-          name: 'Spam',
-          f1: Math.round(activeModel.evaluation.perClass.spam.f1 * 100),
-          precision: Math.round(activeModel.evaluation.perClass.spam.precision * 100),
-          recall: Math.round(activeModel.evaluation.perClass.spam.recall * 100)
-        },
-        {
-          name: 'Phishing',
-          f1: Math.round(activeModel.evaluation.perClass.phishing.f1 * 100),
-          precision: Math.round(activeModel.evaluation.perClass.phishing.precision * 100),
-          recall: Math.round(activeModel.evaluation.perClass.phishing.recall * 100)
-        },
-        {
-          name: 'Macro Avg',
-          f1: Math.round(activeModel.evaluation.f1Score * 100),
-          precision: Math.round(activeModel.evaluation.precision * 100),
-          recall: Math.round(activeModel.evaluation.recall * 100)
-        }
-      ]
-    : [
-        { name: 'Header Auth', f1: Math.round(benchmark.moduleScores.headerDomainAuth.f1 * 100), precision: Math.round(benchmark.moduleScores.headerDomainAuth.precision * 100), recall: Math.round(benchmark.moduleScores.headerDomainAuth.recall * 100) },
-        { name: 'RAG Copilot', f1: Math.round(benchmark.moduleScores.ragVerification.f1 * 100), precision: Math.round(benchmark.moduleScores.ragVerification.precision * 100), recall: Math.round(benchmark.moduleScores.ragVerification.recall * 100) },
-        { name: 'Rule Engine', f1: Math.round(benchmark.moduleScores.ruleEngine.f1 * 100), precision: Math.round(benchmark.moduleScores.ruleEngine.precision * 100), recall: Math.round(benchmark.moduleScores.ruleEngine.recall * 100) },
-        { name: 'OCR Lure', f1: Math.round(benchmark.moduleScores.imageOcr.f1 * 100), precision: Math.round(benchmark.moduleScores.imageOcr.precision * 100), recall: Math.round(benchmark.moduleScores.imageOcr.recall * 100) },
-      ];
-
-  // Build unified Test Case Table rows from held-out model test split (or baseline suite) + user's vault records
-  const testCaseRows = useMemo<EvaluatedTestCase[]>(() => {
+    // Build Vault / Audit Stream cases
     const vaultCases: EvaluatedTestCase[] = records.map((rec, idx) => {
-      const actualLabel: EmailLabel = rec.isSpam
-        ? rec.metrics.phishingLikelihood >= 55
+      const v0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      extractEngineeredFeatures(rec.subject, rec.body, rec.sender, rec.rawHeaders);
+      vectorMsAccum += (typeof performance !== 'undefined' ? performance.now() : Date.now()) - v0;
+
+      const res = analyzeEmailWithModel(rec.subject, rec.body, rec.rawHeaders, rec.sender);
+      const actualLabel: EmailLabel =
+        rec.groundTruthLabel ||
+        (rec.isSpam
+          ? rec.metrics.phishingLikelihood >= 55
+            ? 'phishing'
+            : 'spam'
+          : 'legitimate');
+      const actualThreat = actualLabel !== 'legitimate';
+      const predThreat = res.metrics.spamScore >= 50 || res.metrics.phishingLikelihood >= 55;
+      const predictedLabel: EmailLabel = res.modelPrediction
+        ? res.modelPrediction.predictedLabel
+        : predThreat
+        ? res.metrics.phishingLikelihood >= 55
           ? 'phishing'
           : 'spam'
         : 'legitimate';
-      const predictedThreat = rec.metrics.spamScore >= 50;
-      const predictedLabel: EmailLabel = predictedThreat
-        ? rec.metrics.phishingLikelihood >= 55
-          ? 'phishing'
-          : 'spam'
-        : 'legitimate';
+
       const outcome: 'TP' | 'TN' | 'FP' | 'FN' =
-        predictedThreat && rec.isSpam
+        predThreat && actualThreat
           ? 'TP'
-          : predictedThreat && !rec.isSpam
+          : predThreat && !actualThreat
           ? 'FP'
-          : !predictedThreat && !rec.isSpam
+          : !predThreat && !actualThreat
           ? 'TN'
           : 'FN';
 
@@ -214,15 +330,19 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
         sender: rec.sender,
         actualLabel,
         predictedLabel,
-        spamScore: rec.metrics.spamScore,
-        confidence: predictedThreat ? rec.metrics.spamScore : 100 - rec.metrics.spamScore,
+        spamScore: res.metrics.spamScore,
+        confidence: predThreat ? res.metrics.spamScore : 100 - res.metrics.spamScore,
         outcome,
         correct: outcome === 'TP' || outcome === 'TN',
         source: 'vault_record'
       };
     });
 
-    const imageUnitCases: EvaluatedTestCase[] = (activeModel?.imageUnit?.evaluation.testCases || []).map(ic => ({
+    // Held-out test cases from Trained Local Text Model & Image Unit
+    const modelTextCases: EvaluatedTestCase[] = hasCustomTextModel && activeModel?.evaluation.testCases
+      ? activeModel.evaluation.testCases
+      : [];
+    const modelImageCases: EvaluatedTestCase[] = (activeModel?.imageUnit?.evaluation.testCases || []).map(ic => ({
       id: ic.id,
       subject: `[Image] ${ic.fileName}`,
       sender: 'image-vision-unit',
@@ -235,56 +355,119 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
       source: 'test_split'
     }));
 
-    if (activeModel && activeModel.evaluation.testCases && activeModel.evaluation.testCases.length > 0) {
-      return [...activeModel.evaluation.testCases, ...imageUnitCases, ...vaultCases];
+    // Live-scored Staged Trainer Corpus
+    const trainerLiveCases: EvaluatedTestCase[] = stagedSamples.map((sample, idx) =>
+      evaluateRawSample(
+        sample.id || `trn-${idx + 1}`,
+        sample.subject,
+        sample.body,
+        sample.sender,
+        sample.rawHeaders,
+        sample.label,
+        sample.source === 'starter' ? 'baseline_suite' : 'trainer_corpus'
+      )
+    );
+
+    // Deduplicate helper using subject + sender + source class
+    const dedupeCases = (list: EvaluatedTestCase[]): EvaluatedTestCase[] => {
+      const seen = new Set<string>();
+      const out: EvaluatedTestCase[] = [];
+      for (const item of list) {
+        const key = `${item.subject.toLowerCase()}::${item.sender.toLowerCase()}::${item.source === 'test_split' ? 'test' : 'msg'}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(item);
+        }
+      }
+      return out;
+    };
+
+    let selectedCases: EvaluatedTestCase[] = [];
+    let sourceLabel = '';
+
+    if (evalScope === 'model_test') {
+      selectedCases = dedupeCases([...modelTextCases, ...modelImageCases]);
+      sourceLabel = `Trained Model Held-Out Test Split (${selectedCases.length} cases)`;
+    } else if (evalScope === 'batch_vault') {
+      selectedCases = dedupeCases([...batchCases, ...vaultCases]);
+      sourceLabel = `Saved Batch CSV (${batchCases.length}) + Personal Vault (${vaultCases.length})`;
+    } else if (evalScope === 'trainer_live') {
+      selectedCases = dedupeCases([...trainerLiveCases, ...batchCases]);
+      sourceLabel = `Live Timed Run on Staged Trainer (${trainerLiveCases.length}) + Batch CSV (${batchCases.length})`;
+    } else {
+      // 'all': If a trained model exists, combine Held-Out Test Split + Batch CSV + Vault Records.
+      // If no custom model is trained yet, run live baseline evaluation across Staged Trainer Corpus + Batch CSV + Vault!
+      if (hasCustomTextModel || modelImageCases.length > 0) {
+        selectedCases = dedupeCases([...modelTextCases, ...modelImageCases, ...batchCases, ...vaultCases]);
+        sourceLabel = `Trained Model Test Split (${modelTextCases.length + modelImageCases.length}) + Batch CSV (${batchCases.length}) + Vault (${vaultCases.length})`;
+      } else {
+        selectedCases = dedupeCases([...trainerLiveCases, ...batchCases, ...vaultCases]);
+        sourceLabel = `Baseline Live Eval: Staged Corpus (${trainerLiveCases.length}) + Batch CSV (${batchCases.length}) + Vault (${vaultCases.length})`;
+      }
     }
 
-    if (imageUnitCases.length > 0) {
-      return [...imageUnitCases, ...vaultCases];
-    }
+    const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTotal;
+    return buildMetricsFromCases(selectedCases, elapsedMs, vectorMsAccum, sourceLabel);
+  }, [records, activeModel, currentUserUid, evalScope, benchmarkTick, hasCustomTextModel]);
 
-    // Baseline validation suite evaluated live when no custom model is active
-    const baselineSamples = [
-      ...STARTER_TRAINING_CORPUS.slice(0, 4),
-      ...STARTER_TRAINING_CORPUS.slice(8, 12),
-      ...STARTER_TRAINING_CORPUS.slice(16, 20)
+  // Bar Graph 1: Overall Performance Summary (%)
+  const overallPerformanceBarData = useMemo(() => [
+    { metric: 'Accuracy', score: Number((liveEval.accuracy * 100).toFixed(1)), fill: '#1e8e3e' },
+    { metric: 'Precision', score: Number((liveEval.precision * 100).toFixed(1)), fill: '#1a73e8' },
+    { metric: 'Recall', score: Number((liveEval.recall * 100).toFixed(1)), fill: '#0284c7' },
+    { metric: 'F1 Score', score: Number((liveEval.f1Score * 100).toFixed(1)), fill: '#4f46e5' },
+    { metric: 'Specificity', score: Number((liveEval.specificity * 100).toFixed(1)), fill: '#0d9488' },
+    { metric: 'ROC AUC', score: Number((liveEval.rocAUC * 100).toFixed(1)), fill: '#e37400' }
+  ], [liveEval]);
+
+  // Bar Graph 2: Detection Rates vs Error Rates (%)
+  const ratesComparisonBarData = useMemo(() => [
+    { rate: 'True Positive Rate', value: Number((liveEval.recall * 100).toFixed(1)), fill: '#1e8e3e' },
+    { rate: 'True Negative Rate', value: Number((liveEval.specificity * 100).toFixed(1)), fill: '#1a73e8' },
+    { rate: 'False Positive Rate', value: Number((liveEval.falsePositiveRate * 100).toFixed(1)), fill: '#e37400' },
+    { rate: 'False Negative Rate', value: Number((liveEval.falseNegativeRate * 100).toFixed(1)), fill: '#d93025' }
+  ], [liveEval]);
+
+  // Bar Graph 3: Real Per-Class Precision, Recall & F1 Comparison (%)
+  const classBarData = useMemo(() => {
+    const leg = liveEval.perClass.legitimate;
+    const spm = liveEval.perClass.spam;
+    const phs = liveEval.perClass.phishing;
+    const activeClasses = [leg, spm, phs].filter(c => c.support > 0);
+    const divisor = Math.max(1, activeClasses.length);
+    const macroF1 = activeClasses.reduce((s, c) => s + c.f1, 0) / divisor;
+    const macroPrec = activeClasses.reduce((s, c) => s + c.precision, 0) / divisor;
+    const macroRec = activeClasses.reduce((s, c) => s + c.recall, 0) / divisor;
+
+    return [
+      {
+        name: `Legitimate (${leg.support})`,
+        f1: Number((leg.f1 * 100).toFixed(1)),
+        precision: Number((leg.precision * 100).toFixed(1)),
+        recall: Number((leg.recall * 100).toFixed(1))
+      },
+      {
+        name: `Spam (${spm.support})`,
+        f1: Number((spm.f1 * 100).toFixed(1)),
+        precision: Number((spm.precision * 100).toFixed(1)),
+        recall: Number((spm.recall * 100).toFixed(1))
+      },
+      {
+        name: `Phishing (${phs.support})`,
+        f1: Number((phs.f1 * 100).toFixed(1)),
+        precision: Number((phs.precision * 100).toFixed(1)),
+        recall: Number((phs.recall * 100).toFixed(1))
+      },
+      {
+        name: 'Macro Avg',
+        f1: Number((macroF1 * 100).toFixed(1)),
+        precision: Number((macroPrec * 100).toFixed(1)),
+        recall: Number((macroRec * 100).toFixed(1))
+      }
     ];
+  }, [liveEval]);
 
-    const baselineCases: EvaluatedTestCase[] = baselineSamples.map(sample => {
-      const headers = sample.rawHeaders || `From: ${sample.sender}\nDKIM: Pass\nSPF: Pass`;
-      const res = analyzeEmailWithModel(sample.subject, sample.body, headers, sample.sender);
-      const actualThreat = sample.label !== 'legitimate';
-      const predThreat = res.metrics.spamScore >= 50;
-      const predictedLabel: EmailLabel = predThreat
-        ? res.metrics.phishingLikelihood >= 55
-          ? 'phishing'
-          : 'spam'
-        : 'legitimate';
-      const outcome: 'TP' | 'TN' | 'FP' | 'FN' =
-        predThreat && actualThreat
-          ? 'TP'
-          : predThreat && !actualThreat
-          ? 'FP'
-          : !predThreat && !actualThreat
-          ? 'TN'
-          : 'FN';
-
-      return {
-        id: sample.id,
-        subject: sample.subject,
-        sender: sample.sender,
-        actualLabel: sample.label,
-        predictedLabel,
-        spamScore: res.metrics.spamScore,
-        confidence: predThreat ? res.metrics.spamScore : 100 - res.metrics.spamScore,
-        outcome,
-        correct: outcome === 'TP' || outcome === 'TN',
-        source: 'baseline_suite'
-      };
-    });
-
-    return [...vaultCases, ...baselineCases];
-  }, [records, activeModel]);
+  const testCaseRows = liveEval.cases;
 
   const filteredTestCases = useMemo(() => {
     const q = testSearch.trim().toLowerCase();
@@ -335,7 +518,6 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
       return [header, sep, ...rows].join('\n');
     }
 
-    // Default: Fixed-width aligned plain text table
     const pad = (val: string, width: number) => {
       const s = String(val);
       return s.length > width ? `${s.slice(0, width - 3)}...` : s.padEnd(width, ' ');
@@ -364,14 +546,14 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
       ].join(' | ')
     );
     return [
-      `NEOAEGIS ACCURACY & F1 TEST CASE TABLE (${filteredTestCases.length} cases)`,
-      `Accuracy: ${(liveMetrics.accuracy * 100).toFixed(1)}% | Precision: ${(liveMetrics.precision * 100).toFixed(1)}% | Recall: ${(liveMetrics.recall * 100).toFixed(1)}% | F1: ${(liveMetrics.f1Score * 100).toFixed(1)}%`,
+      `NEOAEGIS REAL ACCURACY & F1 TEST CASE TABLE (${filteredTestCases.length} cases)`,
+      `Accuracy: ${(liveEval.accuracy * 100).toFixed(1)}% | Precision: ${(liveEval.precision * 100).toFixed(1)}% | Recall: ${(liveEval.recall * 100).toFixed(1)}% | F1: ${(liveEval.f1Score * 100).toFixed(1)}%`,
       divider,
       header,
       divider,
       ...rows
     ].join('\n');
-  }, [filteredTestCases, copyFormat, liveMetrics]);
+  }, [filteredTestCases, copyFormat, liveEval]);
 
   const handleCopyTestTable = async () => {
     try {
@@ -397,60 +579,56 @@ export default function PerformanceMetrics({ records, activeModel }: Performance
     }
   };
 
-  // Handle benchmark execution simulator
+  // Real live benchmark execution across actual staged Trainer + Batch CSV + Vault items
   const handleRunBenchmark = () => {
     setIsRunningBenchmark(true);
     setBenchmarkProgress(0);
+    setLastBenchmarkBanner(null);
 
-    let progress = 0;
-    const interval = setInterval(() => {
-      progress += 10;
-      setBenchmarkProgress(progress);
-
-      if (progress >= 100) {
-        clearInterval(interval);
+    let step = 0;
+    const timer = setInterval(() => {
+      step += 25;
+      setBenchmarkProgress(step);
+      if (step >= 100) {
+        clearInterval(timer);
+        setEvalScope('trainer_live');
+        setBenchmarkTick(t => t + 1);
         setIsRunningBenchmark(false);
-
-        setBenchmark(prev => ({
-          totalTested: prev.totalTested + 500,
-          tp: prev.tp + 242,
-          fp: prev.fp + 3,
-          tn: prev.tn + 252,
-          fn: prev.fn + 3,
-          avgLatencyMs: Math.floor(130 + Math.random() * 15),
-          rocAUC: 0.991,
-          moduleScores: {
-            ruleEngine: { precision: 0.988, recall: 0.982, f1: 0.985 },
-            imageOcr: { precision: 0.968, recall: 0.952, f1: 0.960 },
-            ragVerification: { precision: 0.994, recall: 0.989, f1: 0.991 },
-            headerDomainAuth: { precision: 0.999, recall: 0.995, f1: 0.997 }
-          }
-        }));
+        setLastBenchmarkBanner(
+          `Executed live inference benchmark over real staged Trainer, Batch CSV, and Vault datasets.`
+        );
       }
-    }, 180);
+    }, 90);
   };
 
   // Export performance evaluation report
   const handleExportPerformanceReport = () => {
+    const totalEval = liveEval.tp + liveEval.fp + liveEval.tn + liveEval.fn;
     const report = `========================================================================
-NEOAEGIS SYSTEM ACCURACY & PERFORMANCE EVALUATION REPORT
+NEOAEGIS REAL ACCURACY & PERFORMANCE EVALUATION REPORT
 ========================================================================
 Report Generated At: ${new Date().toISOString()}
-Evaluated Dataset Size: ${liveMetrics.total} Samples
+Evaluation Scope:    ${liveEval.sourceLabel}
+Evaluated Dataset Size: ${totalEval} Samples
 
-CORE CLASSIFICATION METRICS
-Accuracy:             ${(liveMetrics.accuracy * 100).toFixed(2)}%
-Precision:            ${(liveMetrics.precision * 100).toFixed(2)}%
-Recall (Sensitivity): ${(liveMetrics.recall * 100).toFixed(2)}%
-F1 Score:             ${(liveMetrics.f1Score * 100).toFixed(2)}%
-Specificity:          ${(liveMetrics.specificity * 100).toFixed(2)}%
-ROC AUC Score:        ${activeRocAuc}
+CORE CLASSIFICATION METRICS (REAL MEASURED)
+Accuracy:             ${(liveEval.accuracy * 100).toFixed(2)}%
+Precision:            ${(liveEval.precision * 100).toFixed(2)}%
+Recall (Sensitivity): ${(liveEval.recall * 100).toFixed(2)}%
+F1 Score:             ${(liveEval.f1Score * 100).toFixed(2)}%
+Specificity:          ${(liveEval.specificity * 100).toFixed(2)}%
+ROC AUC Score:        ${liveEval.rocAUC}
 
 CONFUSION MATRIX BREAKDOWN
-True Positives (TP - Threat Blocked):   ${liveMetrics.tp}
-False Positives (FP - Legit Flagged):   ${liveMetrics.fp} (${(liveMetrics.falsePositiveRate * 100).toFixed(2)}% FPR)
-True Negatives (TN - Legit Passed):     ${liveMetrics.tn}
-False Negatives (FN - Threat Missed):   ${liveMetrics.fn} (${(liveMetrics.falseNegativeRate * 100).toFixed(2)}% FNR)
+True Positives (TP - Threat Blocked):   ${liveEval.tp}
+False Positives (FP - Legit Flagged):   ${liveEval.fp} (${(liveEval.falsePositiveRate * 100).toFixed(2)}% FPR)
+True Negatives (TN - Legit Passed):     ${liveEval.tn}
+False Negatives (FN - Threat Missed):   ${liveEval.fn} (${(liveEval.falseNegativeRate * 100).toFixed(2)}% FNR)
+
+MEASURED PERFORMANCE
+Average Per-Email Latency: ${liveEval.avgLatencyMs} ms
+Throughput:                ${liveEval.throughputPerSec.toLocaleString()} emails/sec
+Feature Extraction Time:   ${liveEval.vectorLookupMs} ms/email
 
 TEST CASE LOG
 ${formattedTestCasesText}
@@ -460,90 +638,130 @@ ${formattedTestCasesText}
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `neoaegis_system_performance_f1_report_${new Date().toISOString().split('T')[0]}.md`;
+    link.download = `neoaegis_real_accuracy_f1_report_${new Date().toISOString().split('T')[0]}.md`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
 
-  // Totals for formatted Confusion Matrix
-  const actualThreatTotal = liveMetrics.tp + liveMetrics.fn;
-  const actualLegitTotal = liveMetrics.fp + liveMetrics.tn;
-  const predThreatTotal = liveMetrics.tp + liveMetrics.fp;
-  const predLegitTotal = liveMetrics.fn + liveMetrics.tn;
-  const matrix3x3 = activeModel?.evaluation.confusionMatrix3x3;
-  const classLabels3x3: EmailLabel[] = ['legitimate', 'spam', 'phishing'];
+  const totalEvaluated = liveEval.tp + liveEval.fp + liveEval.tn + liveEval.fn;
+  const actualThreatTotal = liveEval.tp + liveEval.fn;
+  const actualLegitTotal = liveEval.fp + liveEval.tn;
+  const predThreatTotal = liveEval.tp + liveEval.fp;
+  const predLegitTotal = liveEval.fn + liveEval.tn;
+  const matrix3x3 = liveEval.confusionMatrix3x3;
 
   return (
     <div className="space-y-8 animate-fade-in" id="performance-tab">
-      
       {/* 1. Header Banner & Action Control */}
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 shadow-3xs">
-        <div className="space-y-1">
-          <div className="flex items-center space-x-2.5">
-            <Target className="w-5 h-5 text-indigo-600" />
-            <h2 className="text-base font-medium text-slate-900">System Performance &amp; Precision Matrix</h2>
-            <InfoButton
-              title="System Performance & Precision Matrix"
-              description={`Real-time accuracy, F1 score, multi-bar performance charts, formatted confusion matrix, ROC AUC curve, and copyable test case audit table across ${liveMetrics.total} evaluated items.`}
-              align="left"
-            />
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col gap-4 shadow-3xs">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center space-x-2.5">
+              <Target className="w-5 h-5 text-indigo-600" />
+              <h2 className="text-base font-medium text-slate-900">System Performance &amp; Real Precision Matrix</h2>
+              <InfoButton
+                title="100% Real Accuracy & Precision Matrix"
+                description="All accuracy, F1, confusion matrix, ROC AUC, latency, and throughput metrics are calculated directly from live evaluation of your trained model test split, saved Batch CSV rows, staged Trainer corpus, and Personal Vault—zero hardcoded benchmarks."
+                align="left"
+              />
+            </div>
+            <span className="text-xs text-slate-500 block tabular-nums">
+              Active Source:{' '}
+              <strong className={hasCustomTextModel ? 'text-emerald-700' : 'text-indigo-700'}>
+                {liveEval.sourceLabel}
+              </strong>
+            </span>
           </div>
-          <span className="text-xs text-slate-500 block">
-            Source:{' '}
-            <strong className={activeModel ? 'text-emerald-700' : 'text-indigo-700'}>
-              {activeModel
-                ? `${activeModel.datasetSize > 0 ? `Trained Local Text (${activeModel.evaluation.testCount} test)` : 'Text Baseline'}${activeModel.imageUnit ? ` + Image Unit (${activeModel.imageUnit.evaluation.testCount} test)` : ''} + ${records.length} vault records`
-                : `Baseline Heuristics (${benchmark.totalTested} baseline + ${records.length} vault records)`}
-            </strong>
-          </span>
+
+          <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+            <button
+              type="button"
+              onClick={handleRunBenchmark}
+              disabled={isRunningBenchmark}
+              className={`px-4 py-2.5 bg-indigo-600 hover:bg-indigo-750 text-white text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-xs ${isRunningBenchmark ? 'opacity-75 cursor-not-allowed' : ''}`}
+            >
+              {isRunningBenchmark ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                  <span>Evaluating ({benchmarkProgress}%)...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4" />
+                  <span>Run Live Benchmark Test</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportPerformanceReport}
+              className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-3xs"
+            >
+              <Download className="w-4 h-4 text-slate-500" />
+              <span>Export Metrics Report (.md)</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
-          <button
-            type="button"
-            onClick={handleRunBenchmark}
-            disabled={isRunningBenchmark}
-            className={`px-4 py-2.5 bg-indigo-600 hover:bg-indigo-750 text-white text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-xs ${isRunningBenchmark ? 'opacity-75 cursor-not-allowed' : ''}`}
-          >
-            {isRunningBenchmark ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                <span>Benchmarking ({benchmarkProgress}%)...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4" />
-                <span>Run Live Benchmark Test</span>
-              </>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleExportPerformanceReport}
-            className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-mono rounded-xl transition duration-150 flex items-center justify-center space-x-2 cursor-pointer shadow-3xs"
-          >
-            <Download className="w-4 h-4 text-slate-500" />
-            <span>Export Metrics Report (.md)</span>
-          </button>
+        {/* Evaluation Scope Switcher */}
+        <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="text-slate-500 font-medium">Real Evaluation Scope:</span>
+          <div className="flex flex-wrap items-center gap-1 bg-white p-1 rounded-full border border-slate-200">
+            {([
+              { id: 'all', label: 'All Real Sources' },
+              { id: 'trainer_live', label: 'Live Staged Corpus + CSV' },
+              { id: 'batch_vault', label: 'Batch CSV + Vault' },
+              ...(hasCustomTextModel || activeModel?.imageUnit ? [{ id: 'model_test' as EvalScope, label: 'Trained Model Test Split' }] : [])
+            ] as { id: EvalScope; label: string }[]).map(opt => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setEvalScope(opt.id)}
+                className={`px-3 py-1 rounded-full font-medium transition cursor-pointer ${
+                  evalScope === opt.id
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Progress Bar during benchmark run */}
+      {/* Progress Bar during live evaluation */}
       {isRunningBenchmark && (
         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
           <div className="flex items-center justify-between text-xs font-mono text-indigo-700 mb-2">
-            <span>Running System Benchmark (500 synthetic test cases)</span>
+            <span>Running Live Timed Classification Over Active Datasets</span>
             <span className="font-bold tabular-nums">{benchmarkProgress}%</span>
           </div>
           <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-            <div 
-              className="bg-indigo-600 h-full transition-all duration-200" 
+            <div
+              className="bg-indigo-600 h-full transition-all duration-150"
               style={{ width: `${benchmarkProgress}%` }}
-            ></div>
+            />
           </div>
+        </div>
+      )}
+
+      {lastBenchmarkBanner && (
+        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-700 text-xs flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{lastBenchmarkBanner}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setLastBenchmarkBanner(null)}
+            className="text-[11px] font-medium hover:underline cursor-pointer"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -556,11 +774,11 @@ ${formattedTestCasesText}
           </div>
           <div className="flex items-baseline space-x-2 mt-1">
             <span className="text-3xl font-semibold text-indigo-700 font-mono">
-              {(liveMetrics.f1Score * 100).toFixed(1)}%
+              {(liveEval.f1Score * 100).toFixed(1)}%
             </span>
             <span className="text-xs text-emerald-600 font-medium flex items-center">
               <ArrowUpRight className="w-3 h-3" />
-              Optimal
+              Live
             </span>
           </div>
         </div>
@@ -572,10 +790,10 @@ ${formattedTestCasesText}
           </div>
           <div className="flex items-baseline space-x-2 mt-1">
             <span className="text-3xl font-semibold text-emerald-700 font-mono">
-              {(liveMetrics.accuracy * 100).toFixed(1)}%
+              {(liveEval.accuracy * 100).toFixed(1)}%
             </span>
             <span className="text-xs text-slate-500 font-mono">
-              ({liveMetrics.tp + liveMetrics.tn}/{liveMetrics.total})
+              ({liveEval.tp + liveEval.tn}/{totalEvaluated})
             </span>
           </div>
         </div>
@@ -587,10 +805,10 @@ ${formattedTestCasesText}
           </div>
           <div className="flex items-baseline space-x-2 mt-1">
             <span className="text-3xl font-semibold text-amber-700 font-mono">
-              {(liveMetrics.precision * 100).toFixed(1)}%
+              {(liveEval.precision * 100).toFixed(1)}%
             </span>
             <span className="text-xs text-slate-500 font-mono">
-              FPR {(liveMetrics.falsePositiveRate * 100).toFixed(2)}%
+              FPR {(liveEval.falsePositiveRate * 100).toFixed(2)}%
             </span>
           </div>
         </div>
@@ -602,10 +820,10 @@ ${formattedTestCasesText}
           </div>
           <div className="flex items-baseline space-x-2 mt-1">
             <span className="text-3xl font-semibold text-blue-700 font-mono">
-              {(liveMetrics.recall * 100).toFixed(1)}%
+              {(liveEval.recall * 100).toFixed(1)}%
             </span>
             <span className="text-xs text-slate-500 font-mono">
-              FNR {(liveMetrics.falseNegativeRate * 100).toFixed(2)}%
+              FNR {(liveEval.falseNegativeRate * 100).toFixed(2)}%
             </span>
           </div>
         </div>
@@ -613,8 +831,6 @@ ${formattedTestCasesText}
 
       {/* 3. Overall Performance Bar Graphs Row */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-        {/* Bar Graph 1: Overall Classifier Performance Summary */}
         <div className="lg:col-span-6 bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-4 shadow-3xs">
           <div className="flex items-center justify-between border-b border-slate-200 pb-3">
             <div className="flex items-center gap-2">
@@ -623,7 +839,7 @@ ${formattedTestCasesText}
             </div>
             <InfoButton
               title="Overall Performance Summary"
-              description="Compares Accuracy, Precision, Recall, F1 Score, Specificity, and ROC AUC percentage across the active evaluation scope."
+              description="Compares real measured Accuracy, Precision, Recall, F1 Score, Specificity, and ROC AUC across the active evaluation scope."
               align="right"
             />
           </div>
@@ -648,7 +864,6 @@ ${formattedTestCasesText}
           </div>
         </div>
 
-        {/* Bar Graph 2: Detection vs Error Rates */}
         <div className="lg:col-span-6 bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-4 shadow-3xs">
           <div className="flex items-center justify-between border-b border-slate-200 pb-3">
             <div className="flex items-center gap-2">
@@ -657,7 +872,7 @@ ${formattedTestCasesText}
             </div>
             <InfoButton
               title="Detection vs. Error Rates"
-              description="Visualizes True Positive Rate and True Negative Rate against False Positive (false alarm) and False Negative (missed threat) error rates."
+              description="Visualizes measured True Positive Rate and True Negative Rate against False Positive and False Negative rates."
               align="right"
             />
           </div>
@@ -681,13 +896,10 @@ ${formattedTestCasesText}
             </ResponsiveContainer>
           </div>
         </div>
-
       </div>
 
       {/* 4. Formatted Confusion Matrix & ROC Curve */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* Proper Formatted Matrix (6 cols) */}
         <div className="lg:col-span-6 bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col justify-between shadow-3xs space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
             <div className="flex items-center space-x-2">
@@ -695,37 +907,34 @@ ${formattedTestCasesText}
               <h3 className="text-sm font-medium text-slate-900">Confusion Matrix</h3>
               <InfoButton
                 title="Formatted Confusion Matrix"
-                description="Rows show ground-truth Actual classes and columns show Predicted classes, with row totals, column totals, and per-cell ratios."
+                description="Rows show ground-truth Actual classes and columns show Predicted classes, computed dynamically over active evaluated samples."
                 align="left"
               />
             </div>
 
-            {matrix3x3 && (
-              <div className="flex items-center gap-1 bg-white p-1 rounded-full border border-slate-200 text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => setMatrixMode('2x2')}
-                  className={`px-2.5 py-1 rounded-full font-medium transition cursor-pointer ${
-                    matrixMode === '2x2' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  2&times;2 Binary
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMatrixMode('3x3')}
-                  className={`px-2.5 py-1 rounded-full font-medium transition cursor-pointer ${
-                    matrixMode === '3x3' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  3&times;3 Multi-Class
-                </button>
-              </div>
-            )}
+            <div className="flex items-center gap-1 bg-white p-1 rounded-full border border-slate-200 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setMatrixMode('2x2')}
+                className={`px-2.5 py-1 rounded-full font-medium transition cursor-pointer ${
+                  matrixMode === '2x2' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                2&times;2 Binary
+              </button>
+              <button
+                type="button"
+                onClick={() => setMatrixMode('3x3')}
+                className={`px-2.5 py-1 rounded-full font-medium transition cursor-pointer ${
+                  matrixMode === '3x3' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                3&times;3 Multi-Class
+              </button>
+            </div>
           </div>
 
-          {/* 2x2 Matrix Table */}
-          {matrixMode === '2x2' || !matrix3x3 ? (
+          {matrixMode === '2x2' ? (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs tabular-nums bg-white rounded-xl overflow-hidden border border-slate-200">
                 <thead>
@@ -752,16 +961,16 @@ ${formattedTestCasesText}
                     </th>
                     <td className="p-3 border border-slate-200 bg-emerald-50 text-center">
                       <span className="text-[10px] font-mono font-semibold text-emerald-700 block">TP (Blocked)</span>
-                      <span className="text-xl font-mono font-bold text-emerald-700">{liveMetrics.tp}</span>
+                      <span className="text-xl font-mono font-bold text-emerald-700">{liveEval.tp}</span>
                       <span className="text-[10px] font-mono text-slate-500 block">
-                        {actualThreatTotal > 0 ? `${((liveMetrics.tp / actualThreatTotal) * 100).toFixed(1)}%` : '0%'}
+                        {actualThreatTotal > 0 ? `${((liveEval.tp / actualThreatTotal) * 100).toFixed(1)}%` : '0%'}
                       </span>
                     </td>
                     <td className="p-3 border border-slate-200 bg-red-50 text-center">
                       <span className="text-[10px] font-mono font-semibold text-red-700 block">FN (Missed)</span>
-                      <span className="text-xl font-mono font-bold text-red-700">{liveMetrics.fn}</span>
+                      <span className="text-xl font-mono font-bold text-red-700">{liveEval.fn}</span>
                       <span className="text-[10px] font-mono text-slate-500 block">
-                        {actualThreatTotal > 0 ? `${((liveMetrics.fn / actualThreatTotal) * 100).toFixed(1)}%` : '0%'}
+                        {actualThreatTotal > 0 ? `${((liveEval.fn / actualThreatTotal) * 100).toFixed(1)}%` : '0%'}
                       </span>
                     </td>
                     <td className="p-3 border border-slate-200 text-right font-mono font-semibold text-slate-700">
@@ -774,16 +983,16 @@ ${formattedTestCasesText}
                     </th>
                     <td className="p-3 border border-slate-200 bg-amber-50 text-center">
                       <span className="text-[10px] font-mono font-semibold text-amber-700 block">FP (False Alarm)</span>
-                      <span className="text-xl font-mono font-bold text-amber-700">{liveMetrics.fp}</span>
+                      <span className="text-xl font-mono font-bold text-amber-700">{liveEval.fp}</span>
                       <span className="text-[10px] font-mono text-slate-500 block">
-                        {actualLegitTotal > 0 ? `${((liveMetrics.fp / actualLegitTotal) * 100).toFixed(1)}%` : '0%'}
+                        {actualLegitTotal > 0 ? `${((liveEval.fp / actualLegitTotal) * 100).toFixed(1)}%` : '0%'}
                       </span>
                     </td>
                     <td className="p-3 border border-slate-200 bg-slate-50/70 text-center">
                       <span className="text-[10px] font-mono font-semibold text-slate-600 block">TN (Allowed)</span>
-                      <span className="text-xl font-mono font-bold text-slate-900">{liveMetrics.tn}</span>
+                      <span className="text-xl font-mono font-bold text-slate-900">{liveEval.tn}</span>
                       <span className="text-[10px] font-mono text-slate-500 block">
-                        {actualLegitTotal > 0 ? `${((liveMetrics.tn / actualLegitTotal) * 100).toFixed(1)}%` : '0%'}
+                        {actualLegitTotal > 0 ? `${((liveEval.tn / actualLegitTotal) * 100).toFixed(1)}%` : '0%'}
                       </span>
                     </td>
                     <td className="p-3 border border-slate-200 text-right font-mono font-semibold text-slate-700">
@@ -796,19 +1005,18 @@ ${formattedTestCasesText}
                     <th className="p-2.5 border border-slate-200 text-left font-medium font-sans">Predicted Total</th>
                     <td className="p-2.5 border border-slate-200 text-center font-semibold">{predThreatTotal}</td>
                     <td className="p-2.5 border border-slate-200 text-center font-semibold">{predLegitTotal}</td>
-                    <td className="p-2.5 border border-slate-200 text-right font-bold">{liveMetrics.total}</td>
+                    <td className="p-2.5 border border-slate-200 text-right font-bold">{totalEvaluated}</td>
                   </tr>
                 </tfoot>
               </table>
             </div>
           ) : (
-            /* 3x3 Multi-Class Matrix for Active Trained Model */
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs tabular-nums bg-white rounded-xl overflow-hidden border border-slate-200">
                 <thead>
                   <tr className="bg-slate-100 text-slate-700">
                     <th className="p-2.5 border border-slate-200 text-left font-medium">Actual \ Pred</th>
-                    {classLabels3x3.map(lbl => (
+                    {CLASSES.map(lbl => (
                       <th key={lbl} className="p-2.5 border border-slate-200 text-center capitalize font-medium">
                         {lbl}
                       </th>
@@ -817,7 +1025,7 @@ ${formattedTestCasesText}
                   </tr>
                 </thead>
                 <tbody>
-                  {classLabels3x3.map((actualLbl, rIdx) => {
+                  {CLASSES.map((actualLbl, rIdx) => {
                     const rowSum = matrix3x3[rIdx].reduce((a, b) => a + b, 0);
                     return (
                       <tr key={actualLbl}>
@@ -853,8 +1061,8 @@ ${formattedTestCasesText}
           )}
 
           <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px] font-mono text-slate-500">
-            <span>False Positive Rate (FPR): <strong className="text-amber-700">{(liveMetrics.falsePositiveRate * 100).toFixed(2)}%</strong></span>
-            <span>False Negative Rate (FNR): <strong className="text-red-600">{(liveMetrics.falseNegativeRate * 100).toFixed(2)}%</strong></span>
+            <span>False Positive Rate (FPR): <strong className="text-amber-700">{(liveEval.falsePositiveRate * 100).toFixed(2)}%</strong></span>
+            <span>False Negative Rate (FNR): <strong className="text-red-600">{(liveEval.falseNegativeRate * 100).toFixed(2)}%</strong></span>
           </div>
         </div>
 
@@ -867,22 +1075,22 @@ ${formattedTestCasesText}
                 <h3 className="text-sm font-medium text-slate-900">ROC Curve &amp; AUC Score</h3>
                 <InfoButton
                   title="ROC Curve & AUC Score"
-                  description={`Plots True Positive Rate vs. False Positive Rate across classification thresholds (AUC = ${activeRocAuc}).`}
+                  description={`Sweeps classification cutoffs across your ${totalEvaluated} real evaluated samples (AUC = ${liveEval.rocAUC}).`}
                   align="left"
                 />
               </div>
               <span className="text-xs font-mono font-semibold text-emerald-700">
-                AUC: {activeRocAuc}
+                AUC: {liveEval.rocAUC}
               </span>
             </div>
 
             <div className="h-60 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={activeRocData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <AreaChart data={liveEval.rocCurve} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="fpr" stroke="#64748b" tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} label={{ value: 'FPR', position: 'insideBottomRight', offset: -5, fill: '#64748b', fontSize: 10 }} />
                   <YAxis stroke="#64748b" tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} label={{ value: 'TPR', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 10 }} />
-                  <Tooltip 
+                  <Tooltip
                     contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#0f172a', fontSize: '11px', borderRadius: '10px' }}
                     formatter={(val: any) => [`${(Number(val) * 100).toFixed(1)}%`, 'Rate']}
                   />
@@ -893,34 +1101,33 @@ ${formattedTestCasesText}
           </div>
 
           <div className="mt-2 pt-2 border-t border-slate-200 text-[11px] font-mono text-slate-500 flex items-center justify-between">
-            <span>ROC Area Under Curve: <strong className="text-emerald-600">{activeRocAuc}</strong></span>
-            <span>Target Threshold: 0.50 Cutoff</span>
+            <span>ROC Area Under Curve: <strong className="text-emerald-600">{liveEval.rocAUC}</strong></span>
+            <span>Measured Cutoff: 0.50</span>
           </div>
         </div>
-
       </div>
 
-      {/* 5. Bar Graph 3: Per-Class / Sub-System Precision, Recall & F1 Comparison */}
+      {/* 5. Bar Graph 3: Real Per-Class Precision, Recall & F1 Comparison */}
       <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-6 shadow-3xs">
         <div className="flex items-center justify-between border-b border-slate-200 pb-4">
           <div className="flex items-center space-x-2">
             <Layers className="w-4 h-4 text-indigo-600" />
             <h3 className="text-sm font-medium text-slate-900">
-              {activeModel ? 'Per-Class Precision, Recall & F1 Bar Graph' : 'Sub-System Detection Metrics Bar Graph'}
+              Per-Class Precision, Recall &amp; F1 Bar Graph
             </h3>
             <InfoButton
-              title="Class & Sub-System Bar Comparison"
-              description="Grouped bar chart comparing F1 Score, Precision, and Recall across email classes (when a local model is trained) or NeoAegis detection sub-modules."
+              title="Real Class Performance Comparison"
+              description="Grouped bar chart comparing measured F1 Score, Precision, and Recall across Legitimate, Spam, Phishing, and Macro Average."
               align="left"
             />
           </div>
-          <span className="text-xs font-medium text-slate-500">4 Core Categories</span>
+          <span className="text-xs font-medium text-slate-500 tabular-nums">{totalEvaluated} Real Cases</span>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
           <div className="lg:col-span-7 h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={moduleBarData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <BarChart data={classBarData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="name" stroke="#475569" fontSize={11} />
                 <YAxis domain={[0, 100]} stroke="#475569" fontSize={11} tickFormatter={v => `${v}%`} />
@@ -934,7 +1141,7 @@ ${formattedTestCasesText}
           </div>
 
           <div className="lg:col-span-5 space-y-3 tabular-nums">
-            {moduleBarData.map(row => (
+            {classBarData.map(row => (
               <div key={row.name} className="bg-white p-3.5 rounded-xl border border-slate-200 flex items-center justify-between shadow-3xs">
                 <div>
                   <h4 className="text-xs font-medium text-slate-800">{row.name}</h4>
@@ -960,7 +1167,7 @@ ${formattedTestCasesText}
               </h3>
               <InfoButton
                 title="Copyable Test Case Audit Table"
-                description="Lists held-out test split samples and evaluated vault messages with actual vs. predicted labels, scores, and outcomes. Copy directly as aligned plain text, TSV, or Markdown."
+                description="Lists all real evaluated cases (held-out model test split, saved Batch CSV uploads, staged Trainer dataset, and Personal Vault records). Copy directly as aligned plain text, TSV, or Markdown."
                 align="left"
               />
             </div>
@@ -1083,9 +1290,13 @@ ${formattedTestCasesText}
                   <td className="py-2.5 px-4 text-[11px] text-slate-500 whitespace-nowrap">
                     {tc.source === 'test_split'
                       ? 'Held-Out Test'
+                      : tc.source === 'batch_csv'
+                      ? 'Batch CSV'
+                      : tc.source === 'trainer_corpus'
+                      ? 'Trainer Dataset'
                       : tc.source === 'vault_record'
                       ? 'Vault Record'
-                      : 'Validation Suite'}
+                      : 'Starter Corpus'}
                   </td>
                   <td className="py-2.5 px-4 capitalize font-medium whitespace-nowrap">
                     <span className={tc.actualLabel === 'phishing' ? 'text-red-700' : tc.actualLabel === 'spam' ? 'text-amber-700' : 'text-emerald-700'}>
@@ -1130,7 +1341,7 @@ ${formattedTestCasesText}
         </div>
       </div>
 
-      {/* 7. Image Training Unit Evaluation Summary (Shown when Image Unit is trained) */}
+      {/* 7. Image Training Unit Evaluation Summary */}
       {activeModel?.imageUnit && (
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4 shadow-3xs">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
@@ -1177,42 +1388,43 @@ ${formattedTestCasesText}
         </div>
       )}
 
-      {/* 8. Latency & Hardware Efficiency Benchmarks */}
+      {/* 8. Measured Execution Latency & Throughput */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 tabular-nums">
         <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs flex items-center justify-between">
           <div>
             <div className="flex items-center space-x-2 text-indigo-600 mb-1">
               <Zap className="w-4 h-4" />
-              <h4 className="text-xs font-medium">Processing Latency</h4>
+              <h4 className="text-xs font-medium">Measured Latency / Email</h4>
             </div>
-            <span className="text-2xl font-semibold text-slate-900 font-mono">{benchmark.avgLatencyMs} ms</span>
+            <span className="text-2xl font-semibold text-slate-900 font-mono">{liveEval.avgLatencyMs} ms</span>
           </div>
-          <InfoButton title="Processing Latency" description="Average time per email for a complete 34-rule and local inference scan." align="right" />
+          <InfoButton title="Measured Latency" description="Actual browser execution time per email across the active evaluation pass." align="right" />
         </div>
 
         <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs flex items-center justify-between">
           <div>
             <div className="flex items-center space-x-2 text-emerald-600 mb-1">
               <Cpu className="w-4 h-4" />
-              <h4 className="text-xs font-medium">Rule Throughput</h4>
+              <h4 className="text-xs font-medium">Measured Throughput</h4>
             </div>
-            <span className="text-2xl font-semibold text-slate-900 font-mono">2,830 / sec</span>
+            <span className="text-2xl font-semibold text-slate-900 font-mono">
+              {liveEval.throughputPerSec.toLocaleString()} / sec
+            </span>
           </div>
-          <InfoButton title="Rule Throughput" description="Single-thread localized JavaScript heuristic & TF-IDF evaluation throughput." align="right" />
+          <InfoButton title="Measured Throughput" description="Measured single-thread browser scan rate over the evaluated corpus." align="right" />
         </div>
 
         <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl shadow-3xs flex items-center justify-between">
           <div>
             <div className="flex items-center space-x-2 text-amber-600 mb-1">
               <Activity className="w-4 h-4" />
-              <h4 className="text-xs font-medium">Vector Lookup Latency</h4>
+              <h4 className="text-xs font-medium">Feature Extraction Time</h4>
             </div>
-            <span className="text-2xl font-semibold text-slate-900 font-mono">48 ms</span>
+            <span className="text-2xl font-semibold text-slate-900 font-mono">{liveEval.vectorLookupMs} ms</span>
           </div>
-          <InfoButton title="Vector Lookup Latency" description="Average in-memory RAG knowledge context retrieval latency." align="right" />
+          <InfoButton title="Feature Extraction Time" description="Measured per-email runtime for 7 security feature + token vector extraction." align="right" />
         </div>
       </div>
-
     </div>
   );
 }

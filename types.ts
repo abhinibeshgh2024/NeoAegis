@@ -63,6 +63,8 @@ export interface EmailRecord {
   timestamp: string;
   isSpam: boolean;
   metrics: SpamMetrics;
+  groundTruthLabel?: EmailLabel;
+  granularTier?: GranularThreatTier;
 }
 
 export interface ImageAnalysisResult {
@@ -97,6 +99,14 @@ export interface ChatMessage {
 
 export type EmailLabel = 'legitimate' | 'spam' | 'phishing';
 
+export type GranularThreatTier =
+  | 'complete_legitimate'
+  | 'suspicious'
+  | 'spam'
+  | 'highly_spam'
+  | 'phishing'
+  | 'highly_phishing';
+
 export interface TrainingSample {
   id: string;
   subject: string;
@@ -104,6 +114,9 @@ export interface TrainingSample {
   sender: string;
   rawHeaders?: string;
   label: EmailLabel;
+  granularTier?: GranularThreatTier;
+  evaluatedScore?: number;
+  evaluatedPhishingScore?: number;
   source?: 'upload' | 'audit_stream' | 'starter' | 'manual';
 }
 
@@ -132,7 +145,7 @@ export interface EvaluatedTestCase {
   confidence: number;
   outcome: 'TP' | 'TN' | 'FP' | 'FN';
   correct: boolean;
-  source: 'test_split' | 'vault_record' | 'baseline_suite';
+  source: 'test_split' | 'vault_record' | 'baseline_suite' | 'batch_csv' | 'trainer_corpus';
 }
 
 export interface ModelEvaluationSummary {

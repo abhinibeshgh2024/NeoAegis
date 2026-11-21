@@ -30,7 +30,15 @@ import {
   incrementUserWorkingSeconds,
   formatWorkingDuration
 } from './src/lib/firebase';
-import { loadUserTrainedModel, setActiveMlUserUid } from './src/lib/localMlEngine';
+import {
+  classifyGranularEmailTier,
+  loadUserBatchRows,
+  loadUserTrainedModel,
+  loadUserTrainerSamples,
+  saveUserBatchRows,
+  saveUserTrainerSamples,
+  setActiveMlUserUid
+} from './src/lib/localMlEngine';
 import Dashboard from './Dashboard';
 import EmailAnalyzer from './EmailAnalyzer';
 import ImageAnalyzer from './ImageAnalyzer';
@@ -41,7 +49,7 @@ import TrainerLab from './src/components/TrainerLab';
 import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
 import InfoButton from './src/components/InfoButton';
-import { MOCK_EMAILS, analyzeEmail } from './spamEngine';
+import { MOCK_EMAILS, analyzeEmail, analyzeEmailWithModel } from './spamEngine';
 import { EmailRecord, TrainedModelArtifact, TrainingSample, ImageTrainingSample } from './types';
 
 type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'rag' | 'metrics' | 'trainer' | 'profile' | 'about';
@@ -110,20 +118,27 @@ export default function App() {
     const { emails: savedEmails, exports: savedExports } = await fetchEnclaveUserData(uid);
     const reconstructedRecords: EmailRecord[] = savedEmails.map((item: any) => {
       if (item.fullRecord && item.fullRecord.metrics) {
-        return item.fullRecord as EmailRecord;
+        const rec = item.fullRecord as EmailRecord;
+        const fresh = analyzeEmailWithModel(rec.subject, rec.body, rec.rawHeaders, rec.sender);
+        return {
+          ...rec,
+          isSpam: fresh.metrics.spamScore > 50 || fresh.metrics.phishingLikelihood > 45,
+          metrics: fresh.metrics
+        };
       }
       const fallbackBody = item.body || item.bodySnippet || item.subject || '';
-      const rawHeaders = item.rawHeaders || `From: ${item.sender || 'unknown@sender.org'}\nReceived: by neoaegis.local; SPF=pass; DKIM=pass`;
-      const analyzed = analyzeEmail(item.subject || '', fallbackBody, rawHeaders);
+      const senderAddr = item.sender || 'unknown@sender.org';
+      const rawHeaders = item.rawHeaders || `From: ${senderAddr}\nReceived: by neoaegis.local; SPF=pass; DKIM=pass`;
+      const analyzed = analyzeEmailWithModel(item.subject || '', fallbackBody, rawHeaders, senderAddr).metrics;
       return {
         id: item.id || item.docId || `mail-${Date.now()}`,
         subject: item.subject || 'Untitled Message',
-        sender: item.sender || 'unknown@sender.org',
+        sender: senderAddr,
         recipient: item.recipient || 'analyst@neoaegis.local',
         timestamp: item.date || item.createdAt || new Date().toISOString(),
         body: fallbackBody,
         rawHeaders,
-        isSpam: analyzed.spamScore > 50,
+        isSpam: analyzed.spamScore > 50 || analyzed.phishingLikelihood > 45,
         metrics: analyzed
       };
     });
@@ -176,7 +191,7 @@ export default function App() {
 
     setEmails(prev => {
       const updated = prev.map(mail => {
-        const reMetrics = analyzeEmail(mail.subject, mail.body, mail.rawHeaders);
+        const reMetrics = analyzeEmailWithModel(mail.subject, mail.body, mail.rawHeaders, mail.sender).metrics;
         return {
           ...mail,
           isSpam: reMetrics.spamScore > 50 || reMetrics.phishingLikelihood > 45,
@@ -295,8 +310,9 @@ export default function App() {
 
   // Add dynamically parsed email from batch uploads and persist strictly to current user's profile
   const handleAddNewEmails = async (newRecords: EmailRecord[]) => {
+    if (newRecords.length === 0) return;
     setEmails(prev => {
-      const filtered = prev.filter(p => !newRecords.some(nr => nr.subject === p.subject));
+      const filtered = prev.filter(p => !newRecords.some(nr => nr.subject === p.subject && nr.sender === p.sender));
       return [...newRecords, ...filtered];
     });
     setSelectedEmail(newRecords[0]);
@@ -308,6 +324,61 @@ export default function App() {
         await saveEmailToEnclaveProfile(currentUser.uid, rec);
       }
       await syncUserIsolatedVault(currentUser.uid);
+    }
+  };
+
+  // Sync confirmed CSV dataset rows from Trainer into both Personal Audit Vault & Batch CSV Auditor
+  const handleArchiveTrainerCsvEmails = async (samples: TrainingSample[]) => {
+    if (!currentUser || samples.length === 0) return;
+
+    const evaluatedRecords: EmailRecord[] = samples.map((s, idx) => {
+      const headers = s.rawHeaders || `From: ${s.sender}\nDKIM: Pass\nSPF: Pass`;
+      const res = analyzeEmailWithModel(s.subject, s.body, headers, s.sender);
+      const tierInfo = classifyGranularEmailTier(
+        s.subject,
+        s.body,
+        s.sender,
+        headers,
+        s.granularTier || s.label,
+        res.metrics.spamScore,
+        res.metrics.phishingLikelihood
+      );
+      return {
+        id: s.id || `trncsv-${Date.now()}-${idx}`,
+        subject: s.subject,
+        sender: s.sender,
+        recipient: currentUser.email || 'analyst@neoaegis.local',
+        body: s.body,
+        rawHeaders: headers,
+        timestamp: new Date().toISOString(),
+        isSpam: res.metrics.spamScore >= 50 || res.metrics.phishingLikelihood >= 55,
+        groundTruthLabel: s.label,
+        granularTier: s.granularTier || tierInfo.granularTier,
+        metrics: res.metrics
+      };
+    });
+
+    await handleAddNewEmails(evaluatedRecords);
+
+    // Also append into persisted Batch CSV Auditor rows so they appear and stay saved there too
+    const existingBatch = loadUserBatchRows(currentUser.uid) || [];
+    const existingKeys = new Set(existingBatch.map((b: any) => `${String(b.subject).toLowerCase()}::${String(b.sender).toLowerCase()}`));
+    const newBatchRows = evaluatedRecords
+      .filter(r => !existingKeys.has(`${r.subject.toLowerCase()}::${r.sender.toLowerCase()}`))
+      .map(r => ({
+        id: r.id,
+        subject: r.subject,
+        sender: r.sender,
+        body: r.body,
+        rawHeaders: r.rawHeaders,
+        actualLabel: r.groundTruthLabel || 'spam',
+        actual: (r.groundTruthLabel || 'spam') === 'legitimate' ? 'ham' : 'spam',
+        granularTier: r.granularTier,
+        source: 'trainer_sync'
+      }));
+
+    if (newBatchRows.length > 0) {
+      saveUserBatchRows(currentUser.uid, [...newBatchRows, ...existingBatch]);
     }
   };
 
@@ -1076,6 +1147,12 @@ export default function App() {
                 modelVersion={modelVersion}
                 onSendToTrainer={(sample) => {
                   setIncomingEmailSamples(prev => [sample, ...prev]);
+                  if (currentUser) {
+                    const current = loadUserTrainerSamples(currentUser.uid);
+                    if (!current.some(s => s.id === sample.id)) {
+                      saveUserTrainerSamples(currentUser.uid, [sample, ...current]);
+                    }
+                  }
                   setPreferredTrainerUnit('text');
                 }}
               />
@@ -1095,7 +1172,21 @@ export default function App() {
 
             {currentTab === 'batch' && (
               <BatchAnalyzer 
+                currentUserUid={currentUser?.uid}
                 onAddEmailRecords={handleAddNewEmails}
+                onSendBatchToTrainer={(batchSamples) => {
+                  setIncomingEmailSamples(prev => [...batchSamples, ...prev]);
+                  if (currentUser) {
+                    const current = loadUserTrainerSamples(currentUser.uid);
+                    const existingIds = new Set(current.map(s => s.id));
+                    const additions = batchSamples.filter(s => !existingIds.has(s.id));
+                    if (additions.length > 0) {
+                      saveUserTrainerSamples(currentUser.uid, [...additions, ...current]);
+                    }
+                  }
+                  setPreferredTrainerUnit('text');
+                  setCurrentTab('trainer');
+                }}
                 activeModel={activeModel}
                 modelVersion={modelVersion}
               />
@@ -1109,6 +1200,7 @@ export default function App() {
               <PerformanceMetrics 
                 records={emails}
                 activeModel={activeModel}
+                currentUserUid={currentUser?.uid}
               />
             )}
 
@@ -1121,6 +1213,7 @@ export default function App() {
                 incomingEmailSamples={incomingEmailSamples}
                 incomingImageSamples={incomingImageSamples}
                 preferredUnit={preferredTrainerUnit}
+                onArchiveUploadedCsvEmails={handleArchiveTrainerCsvEmails}
               />
             )}
 

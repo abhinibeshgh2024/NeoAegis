@@ -5,7 +5,9 @@
 
 import {
   EmailLabel,
+  GranularThreatTier,
   TrainingSample,
+  ImageTrainingSample,
   EpochTelemetry,
   ModelEvaluationSummary,
   TrainedModelArtifact,
@@ -109,6 +111,78 @@ export function clearUserTrainedModel(uid: string): void {
     window.localStorage.removeItem(getModelStorageKey(uid));
   } catch {
     // ignore storage errors
+  }
+}
+
+// ============================================================================
+// Per-User Persistent Staging Datasets (Text Corpus, Images, Batch CSV)
+// ============================================================================
+
+export function loadUserTrainerSamples(uid?: string | null): TrainingSample[] {
+  const targetUid = uid !== undefined ? uid : activeMlUserUid;
+  if (!targetUid || typeof window === 'undefined') return [...STARTER_TRAINING_CORPUS];
+  try {
+    const raw = window.localStorage.getItem(`neoaegis_trainer_text_${targetUid}`);
+    if (raw === null) {
+      return [...STARTER_TRAINING_CORPUS];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [...STARTER_TRAINING_CORPUS];
+  } catch {
+    return [...STARTER_TRAINING_CORPUS];
+  }
+}
+
+export function saveUserTrainerSamples(uid: string, samples: TrainingSample[]): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`neoaegis_trainer_text_${uid}`, JSON.stringify(samples));
+  } catch (err) {
+    console.warn('Unable to persist trainer text dataset:', err);
+  }
+}
+
+export function loadUserTrainerImages(uid?: string | null): ImageTrainingSample[] | null {
+  const targetUid = uid !== undefined ? uid : activeMlUserUid;
+  if (!targetUid || typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`neoaegis_trainer_images_${targetUid}`);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserTrainerImages(uid: string, images: ImageTrainingSample[]): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`neoaegis_trainer_images_${uid}`, JSON.stringify(images));
+  } catch (err) {
+    console.warn('Unable to persist trainer image dataset (storage quota):', err);
+  }
+}
+
+export function loadUserBatchRows(uid?: string | null): any[] | null {
+  const targetUid = uid !== undefined ? uid : activeMlUserUid;
+  if (!targetUid || typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`neoaegis_batch_csv_${targetUid}`);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserBatchRows(uid: string, rows: any[]): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`neoaegis_batch_csv_${uid}`, JSON.stringify(rows));
+  } catch (err) {
+    console.warn('Unable to persist batch CSV rows:', err);
   }
 }
 
@@ -849,8 +923,8 @@ export async function trainLocalClassifier(
 }
 
 function buildClassScore(m: { tp: number; fp: number; fn: number; support: number }) {
-  const precision = m.tp + m.fp > 0 ? m.tp / (m.tp + m.fp) : m.support === 0 ? 1 : 0;
-  const recall = m.tp + m.fn > 0 ? m.tp / (m.tp + m.fn) : m.support === 0 ? 1 : 0;
+  const precision = m.tp + m.fp > 0 ? m.tp / (m.tp + m.fp) : 0;
+  const recall = m.tp + m.fn > 0 ? m.tp / (m.tp + m.fn) : 0;
   const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
   return {
     precision: Number(precision.toFixed(4)),
@@ -927,47 +1001,211 @@ export function predictWithModel(
 }
 
 // ============================================================================
-// CSV / JSON Dataset Parsers
+// CSV / JSON Dataset Parsers & Granular Risk Tier Categorization
 // ============================================================================
+
+export const GRANULAR_TIER_META: Record<
+  GranularThreatTier,
+  { label: string; shortLabel: string; baseClass: EmailLabel }
+> = {
+  complete_legitimate: {
+    label: 'Complete Legitimate',
+    shortLabel: 'Complete Legit',
+    baseClass: 'legitimate'
+  },
+  suspicious: {
+    label: 'Borderline / Suspicious',
+    shortLabel: 'Borderline',
+    baseClass: 'legitimate'
+  },
+  spam: {
+    label: 'Spam',
+    shortLabel: 'Spam',
+    baseClass: 'spam'
+  },
+  highly_spam: {
+    label: 'Highly Spam',
+    shortLabel: 'Highly Spam',
+    baseClass: 'spam'
+  },
+  phishing: {
+    label: 'Phishing',
+    shortLabel: 'Phishing',
+    baseClass: 'phishing'
+  },
+  highly_phishing: {
+    label: 'Highly Phishing',
+    shortLabel: 'Highly Phishing',
+    baseClass: 'phishing'
+  }
+};
 
 export function normalizeEmailLabel(raw: string | undefined | null): EmailLabel {
   const val = String(raw || '').trim().toLowerCase();
-  if (val.includes('phish') || val.includes('malicious') || val.includes('scam') || val.includes('bec') || val === '2') {
+  if (
+    val.includes('phish') ||
+    val.includes('malicious') ||
+    val.includes('scam') ||
+    val.includes('fraud') ||
+    val.includes('credential') ||
+    val.includes('bec') ||
+    val === '2'
+  ) {
     return 'phishing';
   }
-  if (val.includes('legit') || val.includes('ham') || val.includes('clean') || val.includes('safe') || val.includes('benign') || val === '0') {
+  if (
+    val.includes('not spam') ||
+    val.includes('non-spam') ||
+    val.includes('nonspam') ||
+    val.includes('legit') ||
+    val.includes('ham') ||
+    val.includes('clean') ||
+    val.includes('safe') ||
+    val.includes('benign') ||
+    val.includes('normal') ||
+    val.includes('good') ||
+    val === 'false' ||
+    val === '0'
+  ) {
     return 'legitimate';
   }
   return 'spam';
 }
 
-function parseCsvRow(line: string): string[] {
-  const result: string[] = [];
-  let current = '';
+export function classifyGranularEmailTier(
+  subject: string,
+  body: string,
+  sender: string,
+  rawHeaders: string = '',
+  rawLabel?: string | null,
+  scoreOverride?: number,
+  phishOverride?: number
+): { baseLabel: EmailLabel; granularTier: GranularThreatTier; severityScore: number } {
+  const labelText = String(rawLabel || '').trim().toLowerCase();
+  const feats = extractEngineeredFeatures(subject, body, sender, rawHeaders);
+  // feats: [0:urgency, 1:financial, 2:authority, 3:spoof, 4:links, 5:header, 6:style]
+  const rawSignalScore = Math.min(
+    99,
+    Math.max(
+      2,
+      Math.round(
+        (feats[0] * 18 +
+          feats[1] * 18 +
+          feats[2] * 22 +
+          feats[3] * 22 +
+          feats[4] * 18 +
+          feats[5] * 15 +
+          feats[6] * 12) *
+          1.15
+      )
+    )
+  );
+  const phishSignal = Math.round((feats[2] * 35 + feats[3] * 35 + feats[4] * 25 + feats[5] * 20));
+  const severityScore = scoreOverride !== undefined ? scoreOverride : rawSignalScore;
+  const phishSeverity = phishOverride !== undefined ? phishOverride : phishSignal;
+
+  // 1. Honor explicit granular label tokens if present in uploaded dataset
+  if (labelText) {
+    if (
+      (labelText.includes('high') || labelText.includes('severe') || labelText.includes('critical')) &&
+      (labelText.includes('phish') || labelText.includes('bec') || labelText.includes('scam'))
+    ) {
+      return { baseLabel: 'phishing', granularTier: 'highly_phishing', severityScore: Math.max(80, severityScore) };
+    }
+    if (
+      (labelText.includes('high') || labelText.includes('severe') || labelText.includes('heavy')) &&
+      labelText.includes('spam')
+    ) {
+      return { baseLabel: 'spam', granularTier: 'highly_spam', severityScore: Math.max(78, severityScore) };
+    }
+    if (
+      (labelText.includes('complete') || labelText.includes('verified') || labelText.includes('clean') || labelText.includes('safe')) &&
+      (labelText.includes('legit') || labelText.includes('ham') || labelText.includes('safe') || labelText.includes('clean'))
+    ) {
+      return { baseLabel: 'legitimate', granularTier: 'complete_legitimate', severityScore: Math.min(18, severityScore) };
+    }
+    if (labelText.includes('suspicious') || labelText.includes('borderline') || labelText.includes('grey')) {
+      return { baseLabel: 'legitimate', granularTier: 'suspicious', severityScore: Math.max(30, Math.min(49, severityScore)) };
+    }
+  }
+
+  // 2. Otherwise determine base label from rawLabel or live signals
+  const baseLabel: EmailLabel = labelText
+    ? normalizeEmailLabel(labelText)
+    : phishSeverity >= 48 || feats[2] + feats[3] >= 0.7
+    ? 'phishing'
+    : severityScore >= 45
+    ? 'spam'
+    : 'legitimate';
+
+  if (baseLabel === 'phishing') {
+    const isHigh = severityScore >= 72 || phishSeverity >= 55 || feats[3] >= 0.45 || feats[5] >= 0.35;
+    return {
+      baseLabel: 'phishing',
+      granularTier: isHigh ? 'highly_phishing' : 'phishing',
+      severityScore: Math.max(isHigh ? 78 : 55, severityScore)
+    };
+  }
+
+  if (baseLabel === 'spam') {
+    const isHigh = severityScore >= 72 || feats[1] >= 0.65 || feats[6] >= 0.45 || feats[4] >= 0.45;
+    return {
+      baseLabel: 'spam',
+      granularTier: isHigh ? 'highly_spam' : 'spam',
+      severityScore: Math.max(isHigh ? 76 : 52, severityScore)
+    };
+  }
+
+  // Legitimate: check if completely legitimate vs borderline/suspicious
+  const isBorderline = severityScore >= 28 || feats[0] + feats[1] + feats[4] >= 0.45;
+  return {
+    baseLabel: 'legitimate',
+    granularTier: isBorderline ? 'suspicious' : 'complete_legitimate',
+    severityScore
+  };
+}
+
+function parseCsvRecords(content: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
+      if (inQuotes && normalized[i + 1] === '"') {
+        field += '"';
         i++;
       } else {
         inQuotes = !inQuotes;
       }
     } else if (ch === ',' && !inQuotes) {
-      result.push(current.trim());
-      current = '';
+      row.push(field.trim());
+      field = '';
+    } else if (ch === '\n' && !inQuotes) {
+      row.push(field.trim());
+      if (row.some(cell => cell.length > 0)) {
+        rows.push(row);
+      }
+      row = [];
+      field = '';
     } else {
-      current += ch;
+      field += ch;
     }
   }
-  result.push(current.trim());
-  return result;
+  row.push(field.trim());
+  if (row.some(cell => cell.length > 0)) {
+    rows.push(row);
+  }
+  return rows;
 }
 
 export function parseDatasetFileContent(content: string, fileName: string): TrainingSample[] {
   const isJson = fileName.toLowerCase().endsWith('.json') || content.trim().startsWith('[') || content.trim().startsWith('{');
   const samples: TrainingSample[] = [];
+  const batchStamp = Date.now();
 
   if (isJson) {
     const parsed = JSON.parse(content);
@@ -986,15 +1224,28 @@ export function parseDatasetFileContent(content: string, fileName: string): Trai
       const subject = String(row.subject || row.title || '').trim();
       const body = String(row.body || row.text || row.content || row.message || '').trim();
       const sender = String(row.sender || row.from || 'unknown@sender.org').trim();
-      const label = normalizeEmailLabel(row.label ?? row.category ?? row.class ?? row.actual ?? (row.isSpam ? 'spam' : 'legitimate'));
+      const rawHeaders = row.rawHeaders ? String(row.rawHeaders) : `From: ${sender}`;
+      const rawLabelVal =
+        row.tier ?? row.granularTier ?? row.label ?? row.category ?? row.class ?? row.actual ?? (row.isSpam === true ? 'spam' : row.isSpam === false ? 'legitimate' : '');
+      const hasExplicitLabel = String(rawLabelVal || '').trim().length > 0;
+      const classified = classifyGranularEmailTier(
+        subject || '(No Subject)',
+        body || subject,
+        sender,
+        rawHeaders,
+        hasExplicitLabel ? String(rawLabelVal) : undefined
+      );
+
       if (subject || body) {
         samples.push({
-          id: `json-${Date.now()}-${idx}`,
+          id: `json-${batchStamp}-${idx}`,
           subject: subject || '(No Subject)',
           body: body || subject,
           sender,
-          rawHeaders: row.rawHeaders ? String(row.rawHeaders) : `From: ${sender}`,
-          label,
+          rawHeaders,
+          label: classified.baseLabel,
+          granularTier: classified.granularTier,
+          evaluatedScore: classified.severityScore,
           source: 'upload'
         });
       }
@@ -1002,44 +1253,109 @@ export function parseDatasetFileContent(content: string, fileName: string): Trai
     return samples;
   }
 
-  // CSV parsing
-  const lines = content
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .filter(l => l.trim().length > 0);
+  // RFC-compliant CSV parsing (handles quoted commas & quoted newlines)
+  const rows = parseCsvRecords(content);
+  if (rows.length === 0) return [];
 
-  if (lines.length === 0) return [];
-
-  const firstCols = parseCsvRow(lines[0]).map(c => c.toLowerCase().replace(/[^a-z0-9_]/g, ''));
+  const firstCols = rows[0].map(c => c.toLowerCase().replace(/[^a-z0-9_]/g, ''));
   const hasHeader =
-    firstCols.includes('subject') ||
-    firstCols.includes('body') ||
-    firstCols.includes('label') ||
-    firstCols.includes('sender');
+    firstCols.some(c =>
+      [
+        'subject', 'title', 'body', 'text', 'emailtext', 'bodytext', 'content', 'message',
+        'label', 'class', 'category', 'actual', 'actualstatus', 'status', 'tier',
+        'emailtype', 'spam', 'isspam', 'target', 'type', 'sender', 'from', 'email', 'v1', 'v2'
+      ].includes(c)
+    );
 
   const subjIdx = hasHeader ? firstCols.findIndex(c => c === 'subject' || c === 'title') : 0;
-  const bodyIdx = hasHeader ? firstCols.findIndex(c => c === 'body' || c === 'text' || c === 'content' || c === 'message') : 1;
+  const bodyIdx = hasHeader
+    ? firstCols.findIndex(c =>
+        c === 'body' ||
+        c === 'text' ||
+        c === 'emailtext' ||
+        c === 'bodytext' ||
+        c === 'content' ||
+        c === 'message' ||
+        c === 'v2'
+      )
+    : 1;
   const senderIdx = hasHeader ? firstCols.findIndex(c => c === 'sender' || c === 'from' || c === 'email') : 2;
-  const labelIdx = hasHeader ? firstCols.findIndex(c => c === 'label' || c === 'class' || c === 'category' || c === 'actual' || c === 'actualstatus') : 3;
+  const labelIdx = hasHeader
+    ? firstCols.findIndex(c =>
+        c === 'label' ||
+        c === 'class' ||
+        c === 'category' ||
+        c === 'actual' ||
+        c === 'actualstatus' ||
+        c === 'status' ||
+        c === 'tier' ||
+        c === 'emailtype' ||
+        c === 'spam' ||
+        c === 'isspam' ||
+        c === 'target' ||
+        c === 'type' ||
+        c === 'v1'
+      )
+    : 3;
+  const headersIdx = hasHeader ? firstCols.findIndex(c => c === 'rawheaders' || c === 'headers') : -1;
 
   const startRow = hasHeader ? 1 : 0;
-  for (let i = startRow; i < lines.length; i++) {
-    const cols = parseCsvRow(lines[i]);
+  for (let i = startRow; i < rows.length; i++) {
+    const cols = rows[i];
     if (cols.length < 2) continue;
 
-    const subject = cols[subjIdx >= 0 ? subjIdx : 0] || '(No Subject)';
-    const body = cols[bodyIdx >= 0 ? bodyIdx : 1] || subject;
-    const sender = cols[senderIdx >= 0 ? senderIdx : 2] || 'unknown@sender.org';
-    const rawLabel = cols[labelIdx >= 0 ? labelIdx : cols.length - 1];
+    let rawBody = '';
+    if (hasHeader) {
+      rawBody = bodyIdx >= 0 ? cols[bodyIdx] || '' : subjIdx >= 0 ? cols[subjIdx] || '' : '';
+    } else {
+      rawBody = cols[1] || cols[0] || '';
+    }
 
-    samples.push({
-      id: `csv-${Date.now()}-${i}`,
+    let rawSubject = '';
+    if (hasHeader) {
+      rawSubject = subjIdx >= 0 ? cols[subjIdx] || '' : '';
+    } else {
+      rawSubject = cols[0] || '';
+    }
+
+    if (!rawSubject && rawBody) {
+      rawSubject = rawBody.slice(0, 72).replace(/\s+/g, ' ').trim();
+    }
+    const subject = rawSubject || '(No Subject)';
+    const body = rawBody || subject;
+    const sender = hasHeader
+      ? senderIdx >= 0 && cols[senderIdx]
+        ? cols[senderIdx]
+        : 'dataset@uploaded.csv'
+      : cols.length >= 3 && cols[2]
+      ? cols[2]
+      : 'dataset@uploaded.csv';
+    const rawHeaders = headersIdx >= 0 && cols[headersIdx] ? cols[headersIdx] : `From: ${sender}`;
+    const rawLabel =
+      labelIdx >= 0
+        ? cols[labelIdx] || ''
+        : !hasHeader && cols.length >= 4
+        ? cols[cols.length - 1]
+        : !hasHeader && cols.length === 2
+        ? ''
+        : '';
+    const classified = classifyGranularEmailTier(
       subject,
       body,
       sender,
-      rawHeaders: `From: ${sender}`,
-      label: normalizeEmailLabel(rawLabel),
+      rawHeaders,
+      rawLabel && rawLabel.trim().length > 0 ? rawLabel : undefined
+    );
+
+    samples.push({
+      id: `csv-${batchStamp}-${i}`,
+      subject,
+      body,
+      sender,
+      rawHeaders,
+      label: classified.baseLabel,
+      granularTier: classified.granularTier,
+      evaluatedScore: classified.severityScore,
       source: 'upload'
     });
   }
