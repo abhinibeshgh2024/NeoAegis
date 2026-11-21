@@ -31,6 +31,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
   // Active metrics output state
   const [metrics, setMetrics] = useState<SpamMetrics | null>(null);
   const [modelPrediction, setModelPrediction] = useState<LocalPredictionResult | null>(null);
+  const [expectedLabel, setExpectedLabel] = useState<'unlabeled' | EmailLabel>('unlabeled');
   const [trainerFeedbackLabel, setTrainerFeedbackLabel] = useState<EmailLabel>('phishing');
   const [trainerSentBanner, setTrainerSentBanner] = useState<string | null>(null);
 
@@ -42,6 +43,10 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
       setRecipient(selectedEmail.recipient);
       setBody(selectedEmail.body);
       setHeaders(selectedEmail.rawHeaders);
+      setExpectedLabel(selectedEmail.groundTruthLabel || 'unlabeled');
+      if (selectedEmail.groundTruthLabel) {
+        setTrainerFeedbackLabel(selectedEmail.groundTruthLabel);
+      }
 
       const res = analyzeEmailWithModel(selectedEmail.subject, selectedEmail.body, selectedEmail.rawHeaders, selectedEmail.sender);
       setMetrics(res.metrics);
@@ -52,6 +57,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
       setRecipient('');
       setBody('');
       setHeaders('');
+      setExpectedLabel('unlabeled');
       setMetrics(null);
       setModelPrediction(null);
     }
@@ -74,6 +80,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
     setMetrics(res.metrics);
     setModelPrediction(res.modelPrediction);
 
+    const resolvedTruth = expectedLabel !== 'unlabeled' ? expectedLabel : selectedEmail?.groundTruthLabel;
     const newRecord: EmailRecord = {
       id: selectedEmail?.id || `custom-${Date.now()}`,
       subject: subject.trim() || '(No Subject)',
@@ -83,10 +90,22 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
       rawHeaders: cleanHeaders,
       timestamp: new Date().toISOString(),
       isSpam: res.metrics.spamScore > 50 || res.metrics.phishingLikelihood > 45,
+      ...(resolvedTruth ? { groundTruthLabel: resolvedTruth } : {}),
       metrics: res.metrics
     };
 
     onAnalyzeFinished(newRecord);
+    if (resolvedTruth && onSendToTrainer) {
+      onSendToTrainer({
+        id: newRecord.id,
+        subject: newRecord.subject,
+        body: newRecord.body,
+        sender: newRecord.sender,
+        rawHeaders: newRecord.rawHeaders,
+        label: resolvedTruth,
+        source: 'manual'
+      });
+    }
   };
 
   const handleClearForm = () => {
@@ -185,6 +204,25 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
               className="w-full text-[11px] font-mono bg-white border border-slate-200 text-slate-800 p-2.5 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
             />
           </div>
+
+          <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs">
+            <span className="text-slate-600 font-medium">Known Ground Truth (Optional for Accuracy):</span>
+            <select
+              value={expectedLabel}
+              onChange={e => {
+                const v = e.target.value as 'unlabeled' | EmailLabel;
+                setExpectedLabel(v);
+                if (v !== 'unlabeled') setTrainerFeedbackLabel(v);
+              }}
+              aria-label="Known ground truth category"
+              className="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer"
+            >
+              <option value="unlabeled">Unlabeled (Predict Only)</option>
+              <option value="legitimate">Legitimate</option>
+              <option value="spam">Spam</option>
+              <option value="phishing">Phishing</option>
+            </select>
+          </div>
         </div>
 
         <button 
@@ -200,11 +238,11 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
         {onSendToTrainer && (
           <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-700">Feedback Label:</span>
+              <span className="font-medium text-slate-700">Confirm Actual Label:</span>
               <select
                 value={trainerFeedbackLabel}
                 onChange={e => setTrainerFeedbackLabel(e.target.value as EmailLabel)}
-                aria-label="Ground truth label for Trainer"
+                aria-label="Ground truth label for Accuracy and Trainer"
                 className="bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
               >
                 <option value="legitimate">Legitimate</option>
@@ -216,22 +254,38 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
               type="button"
               onClick={() => {
                 if (!subject.trim() && !body.trim()) return;
-                onSendToTrainer({
-                  id: `scan-fb-${Date.now()}`,
-                  subject: subject || '(No Subject)',
+                const cleanHeaders = headers || `From: ${sender}\nTo: ${recipient}\nSubject: ${subject}\nDKIM: Pass\nSPF: Pass`;
+                const res = analyzeEmailWithModel(subject, body, cleanHeaders, sender);
+                const labeledRecord: EmailRecord = {
+                  id: selectedEmail?.id || `scan-fb-${Date.now()}`,
+                  subject: subject.trim() || '(No Subject)',
+                  sender: sender.trim() || 'unknown@sender.org',
+                  recipient: recipient.trim() || 'analyst@organization.com',
                   body,
-                  sender: sender || 'unknown@sender.org',
-                  rawHeaders: headers,
+                  rawHeaders: cleanHeaders,
+                  timestamp: new Date().toISOString(),
+                  isSpam: res.metrics.spamScore > 50 || res.metrics.phishingLikelihood > 45,
+                  groundTruthLabel: trainerFeedbackLabel,
+                  metrics: res.metrics
+                };
+                setExpectedLabel(trainerFeedbackLabel);
+                onAnalyzeFinished(labeledRecord);
+                onSendToTrainer({
+                  id: labeledRecord.id,
+                  subject: labeledRecord.subject,
+                  body: labeledRecord.body,
+                  sender: labeledRecord.sender,
+                  rawHeaders: labeledRecord.rawHeaders,
                   label: trainerFeedbackLabel,
                   source: 'manual'
                 });
-                setTrainerSentBanner(`Sent "${subject.slice(0, 28) || 'Message'}..." (${trainerFeedbackLabel}) to Trainer.`);
-                setTimeout(() => setTrainerSentBanner(null), 3000);
+                setTrainerSentBanner(`Saved "${labeledRecord.subject.slice(0, 28)}" as ${trainerFeedbackLabel.toUpperCase()} for Accuracy & collective model training.`);
+                setTimeout(() => setTrainerSentBanner(null), 3500);
               }}
               className="px-3.5 py-2 bg-slate-50 hover:bg-indigo-50 text-indigo-700 border border-slate-200 rounded-full text-xs font-medium transition flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <BrainCircuit className="w-3.5 h-3.5" />
-              <span>Send to Trainer Dataset</span>
+              <span>Save Label &amp; Train Software</span>
             </button>
           </div>
         )}

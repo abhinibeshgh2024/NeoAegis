@@ -24,6 +24,7 @@ import {
   sanitizeCollectiveModelArtifact,
   TrainingHyperparams
 } from './mlCore';
+import { sanitizeCollectiveImageModelArtifact } from './imageVisionEngine';
 
 export {
   ENGINEERED_FEATURE_NAMES,
@@ -34,7 +35,8 @@ export {
   classifyGranularEmailTier,
   parseDatasetFileContent,
   predictWithModel,
-  sanitizeCollectiveModelArtifact
+  sanitizeCollectiveModelArtifact,
+  sanitizeCollectiveImageModelArtifact
 };
 export type { TrainingHyperparams };
 
@@ -49,13 +51,19 @@ export interface CollectiveBackendStats {
   collectiveModelF1: number;
   vocabularySize: number;
   lastTrainedAt: string | null;
+  totalCombinedImages?: number;
+  imageContributorCount?: number;
+  hasCollectiveImageModel?: boolean;
+  collectiveImageAccuracy?: number;
 }
 
 const COLLECTIVE_MODEL_CACHE_KEY = 'neoaegis_collective_model_cache_v1';
+const COLLECTIVE_IMAGE_CACHE_KEY = 'neoaegis_collective_image_cache_v1';
 const COLLECTIVE_STATS_CACHE_KEY = 'neoaegis_collective_stats_cache_v1';
 
 let activeMlUserUid: string | null = null;
 let inMemoryCollectiveModel: TrainedModelArtifact | null = null;
+let inMemoryCollectiveImageUnit: TrainedImageModelArtifact | null = null;
 
 export function setActiveMlUserUid(uid: string | null): void {
   activeMlUserUid = uid;
@@ -125,14 +133,28 @@ export function loadPersonalTrainedModel(uid?: string | null): TrainedModelArtif
   }
 }
 
-export function saveCollectiveBackendModelCache(model: TrainedModelArtifact | null, stats?: CollectiveBackendStats | null): void {
+export function saveCollectiveBackendModelCache(
+  model: TrainedModelArtifact | null,
+  stats?: CollectiveBackendStats | null,
+  imageUnit?: TrainedImageModelArtifact | null
+): void {
   inMemoryCollectiveModel = model ? sanitizeCollectiveModelArtifact(model) : null;
+  if (imageUnit !== undefined) {
+    inMemoryCollectiveImageUnit = imageUnit ? sanitizeCollectiveImageModelArtifact(imageUnit) : null;
+  }
   if (typeof window === 'undefined') return;
   try {
     if (inMemoryCollectiveModel) {
       window.localStorage.setItem(COLLECTIVE_MODEL_CACHE_KEY, JSON.stringify(inMemoryCollectiveModel));
     } else {
       window.localStorage.removeItem(COLLECTIVE_MODEL_CACHE_KEY);
+    }
+    if (imageUnit !== undefined) {
+      if (inMemoryCollectiveImageUnit) {
+        window.localStorage.setItem(COLLECTIVE_IMAGE_CACHE_KEY, JSON.stringify(inMemoryCollectiveImageUnit));
+      } else {
+        window.localStorage.removeItem(COLLECTIVE_IMAGE_CACHE_KEY);
+      }
     }
     if (stats) {
       window.localStorage.setItem(COLLECTIVE_STATS_CACHE_KEY, JSON.stringify(stats));
@@ -165,6 +187,21 @@ export function loadCollectiveBackendModelCache(): TrainedModelArtifact | null {
   }
 }
 
+export function loadCollectiveImageUnitCache(): TrainedImageModelArtifact | null {
+  if (inMemoryCollectiveImageUnit) return inMemoryCollectiveImageUnit;
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(COLLECTIVE_IMAGE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as TrainedImageModelArtifact;
+    if (!parsed || !Array.isArray(parsed.weights) || !Array.isArray(parsed.featureNames)) return null;
+    inMemoryCollectiveImageUnit = sanitizeCollectiveImageModelArtifact(parsed);
+    return inMemoryCollectiveImageUnit;
+  } catch {
+    return null;
+  }
+}
+
 export function loadCollectiveStatsCache(): CollectiveBackendStats | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -177,41 +214,98 @@ export function loadCollectiveStatsCache(): CollectiveBackendStats | null {
 
 /**
  * Resolves the active scoring model for Mail Body Scanner, Batch CSV Auditor,
- * Dashboard, and Accuracy Matrix.
- * Supports both per-user Personal Model and Combined Backend Collective Model.
+ * Image Inspector, Dashboard, and Overall Accuracy.
+ * Combines collective multi-user weights with the active user's own workspace settings cleanly.
  */
 export function loadUserTrainedModel(uid?: string | null): TrainedModelArtifact | null {
   const targetUid = uid !== undefined ? uid : activeMlUserUid;
   const personal = loadPersonalTrainedModel(targetUid);
   const collective = loadCollectiveBackendModelCache();
+  const collectiveImg = loadCollectiveImageUnitCache();
   const mode = getActiveModelPreference(targetUid);
 
-  const attachImageUnit = (base: TrainedModelArtifact | null): TrainedModelArtifact | null => {
-    if (!base) return null;
-    if (personal?.imageUnit && !base.imageUnit) {
-      return { ...base, imageUnit: personal.imageUnit };
+  const pickImageUnit = (): TrainedImageModelArtifact | undefined => {
+    const pImg = personal?.imageUnit;
+    if (mode === 'personal') return pImg || collectiveImg || undefined;
+    if (mode === 'collective') return collectiveImg || pImg || undefined;
+    if (pImg && collectiveImg) {
+      return collectiveImg.datasetSize >= pImg.datasetSize ? collectiveImg : pImg;
     }
-    return base;
+    return pImg || collectiveImg || undefined;
+  };
+
+  const attachBestImageUnit = (base: TrainedModelArtifact | null): TrainedModelArtifact | null => {
+    const img = pickImageUnit();
+    if (base) {
+      return img ? { ...base, imageUnit: img } : base;
+    }
+    if (!img) return null;
+    return {
+      version: img.version,
+      modelType: 'tfidf-softmax-logreg',
+      trainedAt: img.trainedAt,
+      ownerUid: 'collective-backend',
+      datasetSize: 0,
+      vocabularySize: 0,
+      hyperparameters: {
+        trainSplitRatio: 0.8,
+        learningRate: 0.25,
+        smoothingLambda: 0.01,
+        epochs: 40
+      },
+      vocabulary: [],
+      idf: [],
+      engineeredFeatureNames: [...ENGINEERED_FEATURE_NAMES],
+      weights: [
+        [-1.1, -1.0, -1.0, -0.9, -0.9, -0.8, -0.4],
+        [0.45, 0.85, 0.2, 0.35, 0.45, 0.25, 0.5],
+        [0.85, 0.75, 0.95, 0.9, 0.85, 0.8, 0.35]
+      ],
+      bias: [0.95, -0.35, -0.55],
+      history: [],
+      evaluation: {
+        totalSamples: 0,
+        trainCount: 0,
+        testCount: 0,
+        accuracy: 0,
+        precision: 0,
+        recall: 0,
+        f1Score: 0,
+        rocAUC: 0.5,
+        tp: 0,
+        fp: 0,
+        tn: 0,
+        fn: 0,
+        perClass: {
+          legitimate: { precision: 0, recall: 0, f1: 0, support: 0 },
+          spam: { precision: 0, recall: 0, f1: 0, support: 0 },
+          phishing: { precision: 0, recall: 0, f1: 0, support: 0 }
+        },
+        rocCurve: [{ fpr: 0, tpr: 0 }, { fpr: 1, tpr: 1 }]
+      },
+      topTokensByClass: { legitimate: [], spam: [], phishing: [] },
+      imageUnit: img
+    };
   };
 
   if (mode === 'personal') {
-    return personal || attachImageUnit(collective);
+    return attachBestImageUnit(personal || collective);
   }
   if (mode === 'collective') {
-    return attachImageUnit(collective) || personal;
+    return attachBestImageUnit(collective || personal);
   }
 
-  // 'auto': pick whichever has broader/newer trained text coverage while keeping personal imageUnit
+  // 'auto': pick whichever has broader/newer trained text coverage while attaching best image unit
   if (personal && collective) {
     const personalHasText = personal.datasetSize > 0 || personal.vocabulary.length > 0;
-    if (!personalHasText) return attachImageUnit(collective);
+    if (!personalHasText) return attachBestImageUnit(collective);
     if (collective.datasetSize >= personal.datasetSize && collective.version >= personal.version) {
-      return attachImageUnit(collective);
+      return attachBestImageUnit(collective);
     }
-    return personal;
+    return attachBestImageUnit(personal);
   }
 
-  return personal || attachImageUnit(collective);
+  return attachBestImageUnit(personal || collective);
 }
 
 export function clearUserTrainedModel(uid: string): void {
@@ -268,6 +362,40 @@ export function saveUserTrainerImages(uid: string, images: ImageTrainingSample[]
     window.localStorage.setItem(`neoaegis_trainer_images_${uid}`, JSON.stringify(images));
   } catch (err) {
     console.warn('Unable to persist trainer image dataset (storage quota):', err);
+  }
+}
+
+export function loadUserImageAssessments(uid?: string | null): ImageTrainingSample[] {
+  const targetUid = uid !== undefined ? uid : activeMlUserUid;
+  if (!targetUid || typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(`neoaegis_image_assessments_${targetUid}`);
+    if (raw === null) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveUserImageAssessment(uid: string, sample: ImageTrainingSample): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    const existing = loadUserImageAssessments(uid);
+    // Strip heavy base64 dataUrl in lightweight telemetry assessment log to prevent quota issues
+    const lightSample: ImageTrainingSample = {
+      ...sample,
+      dataUrl: ''
+    };
+    const filtered = existing.filter(
+      e => e.id !== lightSample.id && e.fileName.toLowerCase() !== lightSample.fileName.toLowerCase()
+    );
+    window.localStorage.setItem(
+      `neoaegis_image_assessments_${uid}`,
+      JSON.stringify([lightSample, ...filtered].slice(0, 200))
+    );
+  } catch (err) {
+    console.warn('Unable to persist image assessment telemetry:', err);
   }
 }
 
@@ -479,8 +607,9 @@ export async function fetchCollectiveModelFromBackend(
     if (!res.ok) return { model: loadCollectiveBackendModelCache(), stats: loadCollectiveStatsCache() };
     const data = await res.json();
     const model = data?.model ? sanitizeCollectiveModelArtifact(data.model) : null;
+    const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : null;
     const stats = data?.stats || null;
-    saveCollectiveBackendModelCache(model, stats);
+    saveCollectiveBackendModelCache(model, stats, imageUnit);
     return { model, stats };
   } catch {
     return { model: loadCollectiveBackendModelCache(), stats: loadCollectiveStatsCache() };
@@ -537,9 +666,10 @@ export async function contributeSamplesToBackend(
     }
     const data = await res.json();
     const model = data?.model ? sanitizeCollectiveModelArtifact(data.model) : null;
+    const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : undefined;
     const stats = data?.stats || null;
-    if (model || stats) {
-      saveCollectiveBackendModelCache(model, stats);
+    if (model || stats || imageUnit) {
+      saveCollectiveBackendModelCache(model, stats, imageUnit);
     }
     return {
       ok: true,
@@ -554,6 +684,76 @@ export async function contributeSamplesToBackend(
       insertedCount: 0,
       updatedCount: 0,
       model: loadCollectiveBackendModelCache(),
+      stats: loadCollectiveStatsCache()
+    };
+  }
+}
+
+export async function contributeImagesToBackend(
+  uid: string,
+  idToken: string | null,
+  samples: ImageTrainingSample[],
+  hyperparameters?: Partial<TrainingHyperparams>,
+  autoTrain = true
+): Promise<{
+  ok: boolean;
+  insertedCount: number;
+  updatedCount: number;
+  imageUnit: TrainedImageModelArtifact | null;
+  stats: CollectiveBackendStats | null;
+}> {
+  if (!uid || samples.length === 0) {
+    return {
+      ok: false,
+      insertedCount: 0,
+      updatedCount: 0,
+      imageUnit: loadCollectiveImageUnitCache(),
+      stats: loadCollectiveStatsCache()
+    };
+  }
+  try {
+    const res = await fetch('/api/image-dataset/contribute', {
+      method: 'POST',
+      headers: buildBackendHeaders(uid, idToken),
+      body: JSON.stringify({
+        samples: samples.map(s => ({
+          extractedFeatures: s.extractedFeatures,
+          ocrText: s.ocrText,
+          label: s.label
+        })),
+        hyperparameters,
+        autoTrain
+      })
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        insertedCount: 0,
+        updatedCount: 0,
+        imageUnit: loadCollectiveImageUnitCache(),
+        stats: loadCollectiveStatsCache()
+      };
+    }
+    const data = await res.json();
+    const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : null;
+    const model = data?.model ? sanitizeCollectiveModelArtifact(data.model) : loadCollectiveBackendModelCache();
+    const stats = data?.stats || null;
+    if (model || stats || imageUnit) {
+      saveCollectiveBackendModelCache(model, stats, imageUnit);
+    }
+    return {
+      ok: true,
+      insertedCount: Number(data?.insertedCount) || 0,
+      updatedCount: Number(data?.updatedCount) || 0,
+      imageUnit,
+      stats
+    };
+  } catch {
+    return {
+      ok: false,
+      insertedCount: 0,
+      updatedCount: 0,
+      imageUnit: loadCollectiveImageUnitCache(),
       stats: loadCollectiveStatsCache()
     };
   }
@@ -574,7 +774,8 @@ export async function retrainCollectiveModelOnBackend(
     throw new Error(data?.error || 'Collective backend training failed.');
   }
   const sanitized = sanitizeCollectiveModelArtifact(data.model);
-  saveCollectiveBackendModelCache(sanitized, data.stats);
+  const imageUnit = data?.imageUnit ? sanitizeCollectiveImageModelArtifact(data.imageUnit) : undefined;
+  saveCollectiveBackendModelCache(sanitized, data.stats, imageUnit);
   return { model: sanitized, stats: data.stats };
 }
 

@@ -757,6 +757,18 @@ export async function trainImageClassifier(
   };
 }
 
+export function sanitizeCollectiveImageModelArtifact(
+  model: TrainedImageModelArtifact
+): TrainedImageModelArtifact {
+  return {
+    ...model,
+    evaluation: {
+      ...model.evaluation,
+      testCases: []
+    }
+  };
+}
+
 // ============================================================================
 // Self-Contained HTML5 Canvas Raster Email Flyer / Screenshot Generator
 // Generates 12 crisp, deterministic raster PNG training & preset samples locally

@@ -45,6 +45,7 @@ import {
   loadUserTrainedModel,
   loadPersonalTrainedModel,
   contributeSamplesToBackend,
+  contributeImagesToBackend,
   retrainCollectiveModelOnBackend
 } from '../lib/localMlEngine';
 import {
@@ -71,6 +72,7 @@ interface TrainerLabProps {
   onArchiveUploadedCsvEmails?: (samples: TrainingSample[]) => void;
   collectiveStats?: CollectiveBackendStats | null;
   onCollectiveModelSynced?: (model: TrainedModelArtifact | null, stats: CollectiveBackendStats | null) => void;
+  syncTick?: number;
 }
 
 interface PendingCsvRow extends TrainingSample {
@@ -118,7 +120,8 @@ export default function TrainerLab({
   preferredUnit,
   onArchiveUploadedCsvEmails,
   collectiveStats,
-  onCollectiveModelSynced
+  onCollectiveModelSynced,
+  syncTick = 0
 }: TrainerLabProps) {
   // Active Unit Mode inside Trainer: Text & Header Unit vs Image Training Unit
   const [trainerUnit, setTrainerUnit] = useState<'text' | 'image'>(preferredUnit || 'text');
@@ -196,17 +199,30 @@ export default function TrainerLab({
   const imageUploadRef = useRef<HTMLInputElement>(null);
   const imageProbeRef = useRef<HTMLInputElement>(null);
   const loadedUidRef = useRef<string>(currentUserUid);
+  const loadedSyncTickRef = useRef<number>(syncTick);
 
-  // Reload datasets cleanly if user switches account UID
+  // Reload datasets cleanly on account switch or async Firestore vault hydration
   useEffect(() => {
-    if (loadedUidRef.current === currentUserUid) return;
+    const uidChanged = loadedUidRef.current !== currentUserUid;
+    const syncChanged = loadedSyncTickRef.current !== syncTick;
+    if (!uidChanged && !syncChanged) return;
     loadedUidRef.current = currentUserUid;
+    loadedSyncTickRef.current = syncTick;
     setSamples(loadUserTrainerSamples(currentUserUid));
-    setModelMode(getActiveModelPreference(currentUserUid));
-    const savedImgs = loadUserTrainerImages(currentUserUid);
-    setImageSamples(savedImgs !== null ? savedImgs : []);
-    setImagesHydrated(true);
-  }, [currentUserUid]);
+    if (uidChanged) {
+      setModelMode(getActiveModelPreference(currentUserUid));
+      const savedImgs = loadUserTrainerImages(currentUserUid);
+      setImageSamples(savedImgs !== null ? savedImgs : []);
+      setImagesHydrated(true);
+      setProbeResult(null);
+      setImageProbeSample(null);
+      setImageProbeOcr('');
+      setImageProbeResult(null);
+      setStatusMessage(null);
+      setLiveHistory([]);
+      setLiveImageHistory([]);
+    }
+  }, [currentUserUid, syncTick]);
 
   // Persist text dataset whenever user uploads CSV, adds, re-labels, or removes samples
   useEffect(() => {
@@ -600,9 +616,25 @@ export default function TrainerLab({
     if (added.length > 0) {
       setImageSamples(prev => [...added, ...prev]);
       setUploadImageOcr('');
+      const idToken = await getFirebaseIdTokenSafely();
+      const backendImgRes = await contributeImagesToBackend(
+        currentUserUid,
+        idToken,
+        added,
+        {
+          trainSplitRatio: trainSplitPct / 100,
+          learningRate,
+          smoothingLambda,
+          epochs
+        },
+        true
+      );
+      if (backendImgRes.ok) {
+        onCollectiveModelSynced?.(loadUserTrainedModel(currentUserUid), backendImgRes.stats);
+      }
       setStatusMessage({
         type: 'success',
-        text: `Ingested ${added.length} labeled image(s) (${uploadImageLabel}) with real Canvas pixel features extracted.${failedCount ? ` (${failedCount} skipped)` : ''}`
+        text: `Ingested ${added.length} labeled image(s) (${uploadImageLabel}) with real Canvas pixel features extracted${backendImgRes.ok && backendImgRes.stats ? ` & contributed to Collective Vision Engine (${backendImgRes.stats.totalCombinedImages} shared feature vectors)` : ''}.${failedCount ? ` (${failedCount} skipped)` : ''}`
       });
     } else if (failedCount > 0) {
       setStatusMessage({
@@ -752,7 +784,18 @@ export default function TrainerLab({
   };
 
   const handleUpdateImageLabel = (id: string, updatedLabel: EmailLabel) => {
-    setImageSamples(prev => prev.map(s => (s.id === id ? { ...s, label: updatedLabel } : s)));
+    const updatedList = imageSamples.map(s => (s.id === id ? { ...s, label: updatedLabel } : s));
+    setImageSamples(updatedList);
+    const changed = updatedList.find(s => s.id === id);
+    if (changed) {
+      getFirebaseIdTokenSafely().then(idToken =>
+        contributeImagesToBackend(currentUserUid, idToken, [changed], undefined, true).then(res => {
+          if (res.ok) {
+            onCollectiveModelSynced?.(loadUserTrainedModel(currentUserUid), res.stats);
+          }
+        })
+      );
+    }
   };
 
   const handleUpdateImageOcr = async (id: string, newOcr: string) => {
@@ -915,11 +958,31 @@ export default function TrainerLab({
         }
       );
 
-      const mergedArtifact = saveUserTrainedImageUnit(currentUserUid, trainedImg);
-      onModelUpdated(mergedArtifact);
+      saveUserTrainedImageUnit(currentUserUid, trainedImg);
+
+      // Contribute anonymized pixel/OCR feature vectors to collective backend image model
+      const idToken = await getFirebaseIdTokenSafely();
+      const backendImgRes = await contributeImagesToBackend(
+        currentUserUid,
+        idToken,
+        imageSamples,
+        {
+          trainSplitRatio: trainSplitPct / 100,
+          learningRate,
+          smoothingLambda,
+          epochs
+        },
+        true
+      );
+      if (backendImgRes.ok) {
+        onCollectiveModelSynced?.(loadUserTrainedModel(currentUserUid), backendImgRes.stats);
+      }
+
+      const resolvedMerged = loadUserTrainedModel(currentUserUid);
+      onModelUpdated(resolvedMerged);
       setStatusMessage({
         type: 'success',
-        text: `Image Training Unit converged (${trainedImg.datasetSize} images, ${(trainedImg.evaluation.accuracy * 100).toFixed(1)}% test accuracy, ${(trainedImg.evaluation.f1Score * 100).toFixed(1)}% F1) and activated in Image OCR Inspector.`
+        text: `Image Training Unit converged (${trainedImg.datasetSize} personal images, ${(trainedImg.evaluation.accuracy * 100).toFixed(1)}% test accuracy)${backendImgRes.ok && backendImgRes.stats ? ` & synced to Collective Vision Model (${backendImgRes.stats.totalCombinedImages} shared feature vectors across ${backendImgRes.stats.imageContributorCount} contributor(s))` : ''}.`
       });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err?.message || 'Image model training failed.' });
@@ -977,10 +1040,26 @@ export default function TrainerLab({
         trainedImg
       );
 
-      onModelUpdated(trainedFull);
+      const hyperparams = {
+        trainSplitRatio: trainSplitPct / 100,
+        learningRate,
+        smoothingLambda,
+        epochs
+      };
+      const idToken = await getFirebaseIdTokenSafely();
+      const [textSync, imageSync] = await Promise.all([
+        contributeSamplesToBackend(currentUserUid, idToken, samples, hyperparams, true),
+        contributeImagesToBackend(currentUserUid, idToken, imageSamples, hyperparams, true)
+      ]);
+      const latestStats = imageSync.stats || textSync.stats;
+      if (latestStats) {
+        onCollectiveModelSynced?.(textSync.model || loadUserTrainedModel(currentUserUid), latestStats);
+      }
+
+      onModelUpdated(loadUserTrainedModel(currentUserUid) || trainedFull);
       setStatusMessage({
         type: 'success',
-        text: `Full Suite Trained! Text Acc: ${(trainedFull.evaluation.accuracy * 100).toFixed(1)}% | Image Acc: ${(trainedImg.evaluation.accuracy * 100).toFixed(1)}%. Both active across NeoAegis.`
+        text: `Full Suite Trained! Text Acc: ${(trainedFull.evaluation.accuracy * 100).toFixed(1)}% | Image Acc: ${(trainedImg.evaluation.accuracy * 100).toFixed(1)}%. Both personal & collective engines updated.`
       });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err?.message || 'Unified training failed.' });
@@ -1264,11 +1343,11 @@ export default function TrainerLab({
             </div>
             <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-[#5f6368] tabular-nums">
               <span>
-                Combined Emails: <strong className="text-[#202124]">{collectiveStats?.totalCombinedEmails ?? 0}</strong>
+                Combined Emails: <strong className="text-[#202124]">{collectiveStats?.totalCombinedEmails ?? 0}</strong> ({collectiveStats?.contributorCount ?? 0} users)
               </span>
               <span aria-hidden="true">&middot;</span>
               <span>
-                Contributors: <strong className="text-[#202124]">{collectiveStats?.contributorCount ?? 0}</strong>
+                Combined Images: <strong className="text-[#202124]">{collectiveStats?.totalCombinedImages ?? 0}</strong> ({collectiveStats?.imageContributorCount ?? 0} users)
               </span>
               <span aria-hidden="true">&middot;</span>
               <span>
@@ -1280,7 +1359,15 @@ export default function TrainerLab({
                 <>
                   <span aria-hidden="true">&middot;</span>
                   <span>
-                    Collective Acc: <strong className="text-[#137333]">{(collectiveStats.collectiveModelAccuracy * 100).toFixed(1)}%</strong> ({collectiveStats.vocabularySize} tokens)
+                    Collective Text Acc: <strong className="text-[#137333]">{(collectiveStats.collectiveModelAccuracy * 100).toFixed(1)}%</strong> ({collectiveStats.vocabularySize} tokens)
+                  </span>
+                </>
+              )}
+              {collectiveStats?.hasCollectiveImageModel && (
+                <>
+                  <span aria-hidden="true">&middot;</span>
+                  <span>
+                    Collective Vision Acc: <strong className="text-[#137333]">{(collectiveStats.collectiveImageAccuracy * 100).toFixed(1)}%</strong>
                   </span>
                 </>
               )}

@@ -47,6 +47,7 @@ interface BatchAnalyzerProps {
   onCollectiveModelSynced?: (model: TrainedModelArtifact | null, stats: CollectiveBackendStats | null) => void;
   activeModel?: TrainedModelArtifact | null;
   modelVersion?: number;
+  syncTick?: number;
 }
 
 export interface PersistedBatchRow {
@@ -163,7 +164,8 @@ export default function BatchAnalyzer({
   onSendBatchToTrainer,
   onCollectiveModelSynced,
   activeModel,
-  modelVersion = 0
+  modelVersion = 0,
+  syncTick = 0
 }: BatchAnalyzerProps) {
   const buildInitialRows = (uid?: string): PersistedBatchRow[] => {
     const saved = uid ? loadUserBatchRows(uid) : null;
@@ -187,17 +189,23 @@ export default function BatchAnalyzer({
   const [inspectorIndex, setInspectorIndex] = useState<number>(0);
 
   const loadedUidRef = useRef<string | undefined>(currentUserUid);
+  const loadedSyncTickRef = useRef<number | undefined>(syncTick);
 
-  // Hydrate cleanly if user UID changes (strict per-user isolation)
+  // Hydrate cleanly if user UID changes or Firestore vault sync completes (strict per-user isolation)
   useEffect(() => {
-    if (loadedUidRef.current === currentUserUid) return;
+    const uidChanged = loadedUidRef.current !== currentUserUid;
+    const syncChanged = loadedSyncTickRef.current !== syncTick;
+    if (!uidChanged && !syncChanged) return;
     loadedUidRef.current = currentUserUid;
+    loadedSyncTickRef.current = syncTick;
     setEmails(buildInitialRows(currentUserUid));
     setBatchMeta(currentUserUid ? loadUserBatchReportMeta(currentUserUid) : null);
-    setReportCategoryFilter('all');
-    setReportTierFilter('all');
-    setInspectorIndex(0);
-  }, [currentUserUid]);
+    if (uidChanged) {
+      setReportCategoryFilter('all');
+      setReportTierFilter('all');
+      setInspectorIndex(0);
+    }
+  }, [currentUserUid, syncTick]);
 
   // Persist batch rows for current user across tab navigation & reloads
   useEffect(() => {

@@ -17,7 +17,18 @@ import {
   trainClassifierCore,
   TrainingHyperparams
 } from './src/lib/mlCore';
-import { EmailLabel, GranularThreatTier, TrainedModelArtifact, TrainingSample } from './types';
+import {
+  sanitizeCollectiveImageModelArtifact,
+  trainImageClassifier
+} from './src/lib/imageVisionEngine';
+import {
+  EmailLabel,
+  GranularThreatTier,
+  ImageTrainingSample,
+  TrainedImageModelArtifact,
+  TrainedModelArtifact,
+  TrainingSample
+} from './types';
 
 interface BackendCorpusEntry {
   digest: string;
@@ -31,6 +42,15 @@ interface BackendCorpusEntry {
   createdAt: string;
 }
 
+interface BackendImageCorpusEntry {
+  digest: string;
+  contributorHash: string;
+  extractedFeatures: number[];
+  ocrText: string;
+  label: EmailLabel;
+  createdAt: string;
+}
+
 interface BackendSaltConfig {
   salt: string;
 }
@@ -38,6 +58,8 @@ interface BackendSaltConfig {
 const DATA_DIR = path.resolve(process.cwd(), '.neoaegis-data');
 const CORPUS_PATH = path.join(DATA_DIR, 'combined_corpus.json');
 const MODEL_PATH = path.join(DATA_DIR, 'collective_model.json');
+const IMAGE_CORPUS_PATH = path.join(DATA_DIR, 'combined_image_corpus.json');
+const IMAGE_MODEL_PATH = path.join(DATA_DIR, 'collective_image_model.json');
 const SALT_PATH = path.join(DATA_DIR, 'server_salt.json');
 
 // Load Firebase projectId safely for verifyIdToken (needs no IAM)
@@ -131,13 +153,66 @@ function writeCollectiveModel(model: TrainedModelArtifact): TrainedModelArtifact
   return sanitized;
 }
 
-function buildAggregateStats(corpus: BackendCorpusEntry[], model: TrainedModelArtifact | null) {
+function readCombinedImageCorpus(): BackendImageCorpusEntry[] {
+  ensureDataDir();
+  try {
+    if (!fs.existsSync(IMAGE_CORPUS_PATH)) return [];
+    const raw = fs.readFileSync(IMAGE_CORPUS_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCombinedImageCorpus(entries: BackendImageCorpusEntry[]): void {
+  ensureDataDir();
+  const tmpPath = `${IMAGE_CORPUS_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(entries, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, IMAGE_CORPUS_PATH);
+}
+
+function readCollectiveImageModel(): TrainedImageModelArtifact | null {
+  ensureDataDir();
+  try {
+    if (!fs.existsSync(IMAGE_MODEL_PATH)) return null;
+    const raw = fs.readFileSync(IMAGE_MODEL_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as TrainedImageModelArtifact;
+    if (!parsed || !Array.isArray(parsed.weights) || !Array.isArray(parsed.featureNames)) return null;
+    return sanitizeCollectiveImageModelArtifact(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function writeCollectiveImageModel(model: TrainedImageModelArtifact): TrainedImageModelArtifact {
+  ensureDataDir();
+  const sanitized = sanitizeCollectiveImageModelArtifact(model);
+  const tmpPath = `${IMAGE_MODEL_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(sanitized, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, IMAGE_MODEL_PATH);
+  return sanitized;
+}
+
+function computeImageVectorDigest(extractedFeatures: number[], ocrText: string): string {
+  const vecKey = extractedFeatures.map(v => Number(v || 0).toFixed(4)).join(',');
+  const norm = `${vecKey}|${String(ocrText || '').trim().toLowerCase()}`;
+  return crypto.createHash('sha256').update(norm).digest('hex');
+}
+
+function buildAggregateStats(
+  corpus: BackendCorpusEntry[],
+  model: TrainedModelArtifact | null,
+  imageCorpus: BackendImageCorpusEntry[] = readCombinedImageCorpus(),
+  imageModel: TrainedImageModelArtifact | null = readCollectiveImageModel()
+) {
   const classDistribution: Record<EmailLabel, number> = {
     legitimate: 0,
     spam: 0,
     phishing: 0
   };
   const contributors = new Set<string>();
+  const imageContributors = new Set<string>();
 
   for (const row of corpus) {
     if (row.label === 'legitimate' || row.label === 'spam' || row.label === 'phishing') {
@@ -145,6 +220,13 @@ function buildAggregateStats(corpus: BackendCorpusEntry[], model: TrainedModelAr
     }
     if (row.contributorHash) {
       contributors.add(row.contributorHash);
+    }
+  }
+
+  for (const imgRow of imageCorpus) {
+    if (imgRow.contributorHash) {
+      imageContributors.add(imgRow.contributorHash);
+      contributors.add(imgRow.contributorHash);
     }
   }
 
@@ -156,7 +238,11 @@ function buildAggregateStats(corpus: BackendCorpusEntry[], model: TrainedModelAr
     collectiveModelAccuracy: model ? model.evaluation.accuracy : 0,
     collectiveModelF1: model ? model.evaluation.f1Score : 0,
     vocabularySize: model ? model.vocabularySize : 0,
-    lastTrainedAt: model ? model.trainedAt : null
+    lastTrainedAt: model ? model.trainedAt : null,
+    totalCombinedImages: imageCorpus.length,
+    imageContributorCount: imageContributors.size,
+    hasCollectiveImageModel: Boolean(imageModel && imageModel.datasetSize > 0),
+    collectiveImageAccuracy: imageModel ? imageModel.evaluation.accuracy : 0
   };
 }
 
@@ -238,9 +324,12 @@ async function startServer() {
   app.get('/api/model/collective', requireAuthorizedUid, (_req: Request, res: Response) => {
     const corpus = readCombinedCorpus();
     const model = readCollectiveModel();
+    const imageCorpus = readCombinedImageCorpus();
+    const imageUnit = readCollectiveImageModel();
     res.json({
       model,
-      stats: buildAggregateStats(corpus, model)
+      imageUnit,
+      stats: buildAggregateStats(corpus, model, imageCorpus, imageUnit)
     });
   });
 
@@ -339,10 +428,120 @@ async function startServer() {
         insertedCount,
         updatedCount,
         model,
+        imageUnit: readCollectiveImageModel(),
         stats: buildAggregateStats(corpus, model)
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to contribute dataset to backend.' });
+    }
+  });
+
+  /**
+   * POST /api/image-dataset/contribute
+   * Accepts anonymized 8-D pixel telemetry features + OCR text + label (zero base64 image files or filenames).
+   * Trains/updates collective image classifier so all users benefit from visual threat training
+   * without ever exposing any user's raw images.
+   */
+  app.post('/api/image-dataset/contribute', requireAuthorizedUid, async (req: Request, res: Response) => {
+    try {
+      const callerUid: string = (req as any).callerUid;
+      const contributorHash = hashContributor(callerUid);
+
+      const rawSamples = req.body?.samples;
+      if (!Array.isArray(rawSamples) || rawSamples.length === 0) {
+        res.status(400).json({ error: 'Request must include a non-empty image feature samples array.' });
+        return;
+      }
+      if (rawSamples.length > 1000) {
+        res.status(400).json({ error: 'Image feature batch exceeds 1000 records per request.' });
+        return;
+      }
+
+      const imageCorpus = readCombinedImageCorpus();
+      const indexByDigest = new Map<string, number>();
+      imageCorpus.forEach((entry, idx) => indexByDigest.set(entry.digest, idx));
+
+      let insertedCount = 0;
+      let updatedCount = 0;
+
+      for (const item of rawSamples) {
+        if (!item || !Array.isArray(item.extractedFeatures) || item.extractedFeatures.length < 8) continue;
+        const extractedFeatures = item.extractedFeatures.slice(0, 8).map((v: any) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.min(1, Math.max(0, Number(n.toFixed(4)))) : 0;
+        });
+        const ocrText = String(item.ocrText || '').trim().slice(0, 1500);
+        const rawLabel = String(item.label || '').toLowerCase();
+        const label: EmailLabel =
+          rawLabel === 'legitimate' || rawLabel === 'spam' || rawLabel === 'phishing'
+            ? rawLabel
+            : 'spam';
+        const digest = computeImageVectorDigest(extractedFeatures, ocrText);
+
+        const entry: BackendImageCorpusEntry = {
+          digest,
+          contributorHash,
+          extractedFeatures,
+          ocrText,
+          label,
+          createdAt: new Date().toISOString()
+        };
+
+        const existingIdx = indexByDigest.get(digest);
+        if (existingIdx !== undefined) {
+          imageCorpus[existingIdx] = entry;
+          updatedCount++;
+        } else {
+          indexByDigest.set(digest, imageCorpus.length);
+          imageCorpus.push(entry);
+          insertedCount++;
+        }
+      }
+
+      writeCombinedImageCorpus(imageCorpus);
+
+      let imageUnit = readCollectiveImageModel();
+      const shouldAutoTrain = req.body?.autoTrain !== false;
+      if (shouldAutoTrain && imageCorpus.length >= 4) {
+        const trainingImages: ImageTrainingSample[] = imageCorpus.map((entry, idx) => ({
+          id: `colimg-${idx + 1}`,
+          fileName: `vector_${idx + 1}.png`,
+          dataUrl: '',
+          width: 96,
+          height: 96,
+          ocrText: entry.ocrText,
+          label: entry.label,
+          source: 'upload',
+          extractedFeatures: entry.extractedFeatures,
+          telemetry: {
+            colorSpectrum: { red: 0, green: 0, blue: 0, yellow: 0 },
+            saturationSpike: Math.round((entry.extractedFeatures[3] || 0) * 100),
+            edgeTextDensity: Math.round((entry.extractedFeatures[4] || 0) * 100),
+            qrPatternScore: Math.round((entry.extractedFeatures[5] || 0) * 100),
+            qrCodeDetected: (entry.extractedFeatures[5] || 0) >= 0.48,
+            quantizedEntropy: Math.round((entry.extractedFeatures[6] || 0) * 100),
+            aspectRatio: 1,
+            fileSizeKb: 1
+          }
+        }));
+
+        const hyperparams = clampHyperparams(req.body?.hyperparameters);
+        const trainedImg = await trainImageClassifier(trainingImages, hyperparams);
+        imageUnit = writeCollectiveImageModel(trainedImg);
+      }
+
+      const corpus = readCombinedCorpus();
+      const model = readCollectiveModel();
+      res.json({
+        ok: true,
+        insertedCount,
+        updatedCount,
+        imageUnit,
+        model,
+        stats: buildAggregateStats(corpus, model, imageCorpus, imageUnit)
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to contribute image features to backend.' });
     }
   });
 
@@ -375,10 +574,12 @@ async function startServer() {
       const hyperparams = clampHyperparams(req.body?.hyperparameters);
       const trained = await trainClassifierCore(trainingSamples, 'collective-backend', hyperparams);
       const sanitizedModel = writeCollectiveModel(trained);
+      const imageUnit = readCollectiveImageModel();
 
       res.json({
         ok: true,
         model: sanitizedModel,
+        imageUnit,
         stats: buildAggregateStats(corpus, sanitizedModel)
       });
     } catch (err: any) {

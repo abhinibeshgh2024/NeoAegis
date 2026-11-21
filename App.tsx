@@ -37,11 +37,15 @@ import {
   CollectiveBackendStats,
   classifyGranularEmailTier,
   contributeSamplesToBackend,
+  contributeImagesToBackend,
   fetchCollectiveModelFromBackend,
   loadUserBatchRows,
   loadUserTrainedModel,
+  loadUserTrainerImages,
   loadUserTrainerSamples,
   saveUserBatchRows,
+  saveUserImageAssessment,
+  saveUserTrainerImages,
   saveUserTrainerSamples,
   setActiveMlUserUid
 } from './src/lib/localMlEngine';
@@ -116,6 +120,7 @@ export default function App() {
   const [incomingEmailSamples, setIncomingEmailSamples] = useState<TrainingSample[]>([]);
   const [incomingImageSamples, setIncomingImageSamples] = useState<ImageTrainingSample[]>([]);
   const [preferredTrainerUnit, setPreferredTrainerUnit] = useState<'text' | 'image'>('text');
+  const [vaultSyncTick, setVaultSyncTick] = useState<number>(0);
 
   // Load strict per-user isolated records, private uploaded datasets & collective backend model
   const syncUserIsolatedVault = async (uid: string) => {
@@ -205,13 +210,24 @@ export default function App() {
     setModelVersion(v => v + 1);
 
     // 3. Hydrate Personal Audit Stream & Exports strictly for this uid
+    const datasetLabelLookup = new Map<string, TrainingSample['label']>();
+    for (const s of loadUserTrainerSamples(uid)) {
+      datasetLabelLookup.set(`${String(s.subject).trim().toLowerCase()}::${String(s.sender).trim().toLowerCase()}`, s.label);
+    }
+    for (const doc of cloudDatasetDocs) {
+      datasetLabelLookup.set(`${String(doc.subject).trim().toLowerCase()}::${String(doc.sender).trim().toLowerCase()}`, doc.label);
+    }
+
     const { emails: savedEmails, exports: savedExports } = await fetchEnclaveUserData(uid);
     const reconstructedRecords: EmailRecord[] = savedEmails.map((item: any) => {
       if (item.fullRecord && item.fullRecord.metrics) {
         const rec = item.fullRecord as EmailRecord;
         const fresh = analyzeEmailWithModel(rec.subject, rec.body, rec.rawHeaders, rec.sender);
+        const key = `${String(rec.subject).trim().toLowerCase()}::${String(rec.sender).trim().toLowerCase()}`;
+        const inferredTruth = rec.groundTruthLabel || datasetLabelLookup.get(key);
         return {
           ...rec,
+          ...(inferredTruth ? { groundTruthLabel: inferredTruth } : {}),
           isSpam: fresh.metrics.spamScore > 50 || fresh.metrics.phishingLikelihood > 45,
           metrics: fresh.metrics
         };
@@ -220,6 +236,8 @@ export default function App() {
       const senderAddr = item.sender || 'unknown@sender.org';
       const rawHeaders = item.rawHeaders || `From: ${senderAddr}\nReceived: by neoaegis.local; SPF=pass; DKIM=pass`;
       const analyzed = analyzeEmailWithModel(item.subject || '', fallbackBody, rawHeaders, senderAddr).metrics;
+      const key = `${String(item.subject || '').trim().toLowerCase()}::${String(senderAddr).trim().toLowerCase()}`;
+      const inferredTruth = datasetLabelLookup.get(key);
       return {
         id: item.id || item.docId || `mail-${Date.now()}`,
         subject: item.subject || 'Untitled Message',
@@ -228,6 +246,7 @@ export default function App() {
         timestamp: item.date || item.createdAt || new Date().toISOString(),
         body: fallbackBody,
         rawHeaders,
+        ...(inferredTruth ? { groundTruthLabel: inferredTruth } : {}),
         isSpam: analyzed.spamScore > 50 || analyzed.phishingLikelihood > 45,
         metrics: analyzed
       };
@@ -244,6 +263,7 @@ export default function App() {
     const totalSaved = savedEmails.length + savedExports.length + cloudDatasetDocs.length;
     setSavedDataCount(totalSaved);
     setEmailsParsedCount(Math.max(stats.emailsParsedCount, reconstructedRecords.length));
+    setVaultSyncTick(t => t + 1);
   };
 
   useEffect(() => {
@@ -270,6 +290,7 @@ export default function App() {
         setWorkingSeconds(0);
         setIncomingEmailSamples([]);
         setIncomingImageSamples([]);
+        setVaultSyncTick(0);
       }
     });
     return unsubscribe;
@@ -509,7 +530,7 @@ export default function App() {
     { id: 'image', label: 'Image OCR Inspector', icon: Image },
     { id: 'batch', label: 'Batch CSV Auditor', icon: FileSpreadsheet },
     { id: 'rag', label: 'SecOps RAG Assistant', icon: Bot },
-    { id: 'metrics', label: 'Accuracy & F1 Matrix', icon: Gauge },
+    { id: 'metrics', label: 'Overall Accuracy', icon: Gauge },
     { id: 'trainer', label: 'Trainer', icon: BrainCircuit },
     { id: 'profile', label: 'Profile Enclave', icon: User },
     { id: 'about', label: 'About NeoAegis', icon: Info }
@@ -1281,9 +1302,43 @@ export default function App() {
               <ImageAnalyzer
                 activeModel={activeModel}
                 modelVersion={modelVersion}
-                onSendToTrainer={(imgSample) => {
+                onSendToTrainer={async (imgSample) => {
                   setIncomingImageSamples(prev => [imgSample, ...prev]);
+                  if (currentUser) {
+                    const existingImgs = loadUserTrainerImages(currentUser.uid) || [];
+                    if (!existingImgs.some(i => i.id === imgSample.id)) {
+                      saveUserTrainerImages(currentUser.uid, [imgSample, ...existingImgs]);
+                    }
+                    saveUserImageAssessment(currentUser.uid, imgSample);
+                    const idToken = await getFirebaseIdTokenSafely();
+                    const synced = await contributeImagesToBackend(
+                      currentUser.uid,
+                      idToken,
+                      [imgSample],
+                      undefined,
+                      true
+                    );
+                    if (synced.ok) {
+                      handleCollectiveModelSynced(null, synced.stats);
+                    }
+                  }
                   setPreferredTrainerUnit('image');
+                }}
+                onRecordImageAssessment={async (imgSample) => {
+                  if (currentUser) {
+                    saveUserImageAssessment(currentUser.uid, imgSample);
+                    const idToken = await getFirebaseIdTokenSafely();
+                    const synced = await contributeImagesToBackend(
+                      currentUser.uid,
+                      idToken,
+                      [imgSample],
+                      undefined,
+                      true
+                    );
+                    if (synced.ok) {
+                      handleCollectiveModelSynced(null, synced.stats);
+                    }
+                  }
                 }}
                 onSaveScanToVault={handleSingleEmailAnalyzed}
               />
@@ -1318,6 +1373,7 @@ export default function App() {
                 }}
                 activeModel={activeModel}
                 modelVersion={modelVersion}
+                syncTick={vaultSyncTick}
               />
             )}
 
@@ -1331,6 +1387,7 @@ export default function App() {
                 activeModel={activeModel}
                 currentUserUid={currentUser?.uid}
                 collectiveStats={collectiveStats}
+                syncTick={vaultSyncTick}
               />
             )}
 
@@ -1346,6 +1403,7 @@ export default function App() {
                 onArchiveUploadedCsvEmails={handleArchiveTrainerCsvEmails}
                 collectiveStats={collectiveStats}
                 onCollectiveModelSynced={handleCollectiveModelSynced}
+                syncTick={vaultSyncTick}
               />
             )}
 

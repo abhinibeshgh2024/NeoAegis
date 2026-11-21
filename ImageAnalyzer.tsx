@@ -18,7 +18,6 @@ import {
 import {
   computeOcrKeywordRisk,
   extractImageTelemetryFromSource,
-  generateStarterImageSamples,
   predictImageWithModel
 } from './src/lib/imageVisionEngine';
 import { analyzeEmailWithModel } from './spamEngine';
@@ -29,71 +28,32 @@ interface ImageAnalyzerProps {
   modelVersion?: number;
   onSendToTrainer?: (sample: ImageTrainingSample) => void;
   onSaveScanToVault?: (record: EmailRecord) => void;
+  onRecordImageAssessment?: (sample: ImageTrainingSample) => void;
 }
 
 export default function ImageAnalyzer({
   activeModel,
   modelVersion = 0,
   onSendToTrainer,
-  onSaveScanToVault
+  onSaveScanToVault,
+  onRecordImageAssessment
 }: ImageAnalyzerProps) {
-  const [starterPresets, setStarterPresets] = useState<ImageTrainingSample[]>([]);
   const [activeSample, setActiveSample] = useState<ImageTrainingSample | null>(null);
   const [ocrDraft, setOcrDraft] = useState('');
   const [prediction, setPrediction] = useState<ImagePredictionResult | null>(null);
-  const [analyzing, setAnalyzing] = useState(true);
+  const [analyzing, setAnalyzing] = useState(false);
   const [feedbackLabel, setFeedbackLabel] = useState<EmailLabel>('phishing');
   const [actionBanner, setActionBanner] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize deterministic canvas-generated presets on mount
-  useEffect(() => {
-    let mounted = true;
-    generateStarterImageSamples().then(generated => {
-      if (!mounted) return;
-      // Pick 3 representative starters (1 phishing, 1 spam, 1 legitimate) for instant inspection
-      const picked = [
-        generated.find(g => g.id === 'img-seed-phish-1') || generated[0],
-        generated.find(g => g.id === 'img-seed-spam-1') || generated[1],
-        generated.find(g => g.id === 'img-seed-legit-1') || generated[2]
-      ].filter(Boolean) as ImageTrainingSample[];
-
-      setStarterPresets(picked);
-      if (picked.length > 0) {
-        const first = picked[0];
-        setActiveSample(first);
-        setOcrDraft(first.ocrText);
-        setFeedbackLabel(first.label);
-        setPrediction(
-          predictImageWithModel(first.extractedFeatures, first.ocrText, activeModel?.imageUnit)
-        );
-      }
-      setAnalyzing(false);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  // Immediately re-score active image whenever user trains, imports, or resets Image Training Unit
+  // Immediately re-score active image whenever user trains, imports, or collective image model updates
   useEffect(() => {
     if (!activeSample) return;
     setPrediction(
       predictImageWithModel(activeSample.extractedFeatures, ocrDraft, activeModel?.imageUnit)
     );
   }, [modelVersion, activeModel]);
-
-  const selectPreset = async (preset: ImageTrainingSample) => {
-    setActionBanner(null);
-    setAnalyzing(true);
-    setActiveSample(preset);
-    setOcrDraft(preset.ocrText);
-    setFeedbackLabel(preset.label);
-    const pred = predictImageWithModel(preset.extractedFeatures, preset.ocrText, activeModel?.imageUnit);
-    setPrediction(pred);
-    setAnalyzing(false);
-  };
 
   // Real client-side Canvas pixel & edge extraction for uploaded image files
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -175,6 +135,7 @@ export default function ImageAnalyzer({
       source: 'inspector'
     };
     onSendToTrainer(payload);
+    onRecordImageAssessment?.(payload);
     setActionBanner(`Staged "${activeSample.fileName}" labeled as ${feedbackLabel.toUpperCase()} in Trainer.`);
   };
 
@@ -197,6 +158,7 @@ export default function ImageAnalyzer({
       rawHeaders: headers,
       timestamp: new Date().toISOString(),
       isSpam: prediction.predictedLabel !== 'legitimate' || combinedSpam >= 50,
+      groundTruthLabel: feedbackLabel,
       metrics: {
         ...baseAnalysis.metrics,
         spamScore: combinedSpam,
@@ -213,6 +175,13 @@ export default function ImageAnalyzer({
     };
 
     onSaveScanToVault(record);
+    onRecordImageAssessment?.({
+      ...activeSample,
+      id: record.id,
+      ocrText: ocrDraft,
+      label: feedbackLabel,
+      source: 'inspector'
+    });
     setActionBanner(`Logged visual scan "${activeSample.fileName}" to your Personal Audit Stream & Vault.`);
   };
 
@@ -238,34 +207,20 @@ export default function ImageAnalyzer({
             />
           </div>
 
-          {/* Preset selector */}
-          <div>
-            <span className="text-[11px] font-medium text-slate-500">Quick Inspection Samples</span>
-            <div className="grid grid-cols-3 gap-2 mt-2">
-              {starterPresets.map(p => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => selectPreset(p)}
-                  className={`px-2.5 py-2 text-[11px] rounded-lg border text-left transition cursor-pointer ${
-                    activeSample?.id === p.id
-                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700 font-semibold'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <span className="block truncate">{p.fileName.replace('.png', '').replace(/_/g, ' ')}</span>
-                  <span className="block text-[10px] text-slate-400 capitalize mt-0.5">{p.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Image Preview */}
           <div className="relative bg-slate-950 border border-slate-200 rounded-xl overflow-hidden aspect-video flex items-center justify-center shadow-xs">
-            {analyzing || !activeSample ? (
+            {analyzing ? (
               <div className="text-center space-y-2">
                 <RefreshCw className="h-7 w-7 text-indigo-400 animate-spin mx-auto" />
                 <span className="text-xs font-mono text-slate-300">Scanning pixel matrix &amp; edges...</span>
+              </div>
+            ) : !activeSample ? (
+              <div className="text-center p-4 space-y-1.5">
+                <Image className="h-7 w-7 text-slate-400 mx-auto" />
+                <span className="text-xs font-medium text-slate-200 block">No Image Uploaded Yet</span>
+                <span className="text-[11px] text-slate-400 block">
+                  Upload any screenshot or flyer below to inspect pixel telemetry &amp; classify.
+                </span>
               </div>
             ) : (
               <>
