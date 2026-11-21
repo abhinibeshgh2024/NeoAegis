@@ -794,6 +794,103 @@ export async function logExportToEnclaveProfile(
   }
 }
 
+export async function getFirebaseIdTokenSafely(): Promise<string | null> {
+  try {
+    if (!auth.currentUser) return null;
+    return await auth.currentUser.getIdToken();
+  } catch {
+    return null;
+  }
+}
+
+export interface PersistedDatasetEmailDoc {
+  id: string;
+  ownerId: string;
+  subject: string;
+  sender: string;
+  body: string;
+  rawHeaders: string;
+  label: 'legitimate' | 'spam' | 'phishing';
+  granularTier: 'complete_legitimate' | 'suspicious' | 'spam' | 'highly_spam' | 'phishing' | 'highly_phishing';
+  spamScore: number;
+  phishingLikelihood: number;
+  source: 'upload' | 'csv_upload' | 'trainer_sync' | 'audit_stream' | 'manual';
+  createdAt: string;
+}
+
+export async function fetchUserDatasetEmails(uid: string): Promise<PersistedDatasetEmailDoc[]> {
+  if (!uid || !auth.currentUser || auth.currentUser.uid !== uid) return [];
+  try {
+    const q = query(collection(db, 'user_dataset_emails'), where('ownerId', '==', uid));
+    const snaps = await getDocs(q);
+    return snaps.docs
+      .map(d => d.data() as PersistedDatasetEmailDoc)
+      .filter(item => item && item.ownerId === uid)
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'user_dataset_emails');
+    return [];
+  }
+}
+
+export async function saveUserDatasetEmailsBatch(
+  uid: string,
+  items: Omit<PersistedDatasetEmailDoc, 'ownerId' | 'createdAt'>[]
+): Promise<void> {
+  if (!uid || items.length === 0 || !auth.currentUser || auth.currentUser.uid !== uid) return;
+  const nowIso = new Date().toISOString();
+  const allowedTiers = new Set([
+    'complete_legitimate',
+    'suspicious',
+    'spam',
+    'highly_spam',
+    'phishing',
+    'highly_phishing'
+  ]);
+  const allowedSources = new Set(['upload', 'csv_upload', 'trainer_sync', 'audit_stream', 'manual']);
+
+  for (const item of items) {
+    const docId = sanitizeId(`${uid}_${item.id}`);
+    const label =
+      item.label === 'legitimate' || item.label === 'spam' || item.label === 'phishing'
+        ? item.label
+        : 'spam';
+    const granularTier = allowedTiers.has(item.granularTier) ? item.granularTier : 'spam';
+    const source = allowedSources.has(item.source) ? item.source : 'upload';
+
+    const payload: PersistedDatasetEmailDoc = {
+      id: docId,
+      ownerId: uid.slice(0, 128),
+      subject: String(item.subject || '(No Subject)').slice(0, 300),
+      sender: String(item.sender || 'unknown@sender.org').slice(0, 150),
+      body: String(item.body || '').slice(0, 15000),
+      rawHeaders: String(item.rawHeaders || `From: ${item.sender || 'unknown'}`).slice(0, 10000),
+      label,
+      granularTier,
+      spamScore: Math.min(100, Math.max(0, Math.round(Number(item.spamScore) || 0))),
+      phishingLikelihood: Math.min(100, Math.max(0, Math.round(Number(item.phishingLikelihood) || 0))),
+      source,
+      createdAt: nowIso
+    };
+
+    try {
+      await setDoc(doc(db, 'user_dataset_emails', docId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `user_dataset_emails/${docId}`);
+    }
+  }
+}
+
+export async function deleteUserDatasetEmail(uid: string, rawId: string): Promise<void> {
+  if (!uid || !rawId || !auth.currentUser || auth.currentUser.uid !== uid) return;
+  const docId = rawId.startsWith(`${uid}_`) ? sanitizeId(rawId) : sanitizeId(`${uid}_${rawId}`);
+  try {
+    await deleteDoc(doc(db, 'user_dataset_emails', docId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `user_dataset_emails/${docId}`);
+  }
+}
+
 // Validate connection to firestore on load (as instructed by skill)
 export async function testConnection() {
   try {

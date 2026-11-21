@@ -76,6 +76,23 @@ service cloud.firestore {
         && isValidTimestampOrIso(data.createdAt);
     }
 
+    function isValidDatasetEmail(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'subject', 'sender', 'body', 'rawHeaders', 'label', 'granularTier', 'spamScore', 'phishingLikelihood', 'source', 'createdAt'])
+        && data.keys().size() == 12
+        && data.id is string && data.id.size() <= 128
+        && data.ownerId is string && data.ownerId.size() <= 128
+        && data.subject is string && data.subject.size() <= 300
+        && data.sender is string && data.sender.size() <= 150
+        && data.body is string && data.body.size() <= 15000
+        && data.rawHeaders is string && data.rawHeaders.size() <= 10000
+        && data.label is string && (data.label == 'legitimate' || data.label == 'spam' || data.label == 'phishing')
+        && data.granularTier is string && (data.granularTier == 'complete_legitimate' || data.granularTier == 'suspicious' || data.granularTier == 'spam' || data.granularTier == 'highly_spam' || data.granularTier == 'phishing' || data.granularTier == 'highly_phishing')
+        && data.spamScore is number && data.spamScore >= 0 && data.spamScore <= 100
+        && data.phishingLikelihood is number && data.phishingLikelihood >= 0 && data.phishingLikelihood <= 100
+        && data.source is string && (data.source == 'upload' || data.source == 'csv_upload' || data.source == 'trainer_sync' || data.source == 'audit_stream' || data.source == 'manual')
+        && isValidTimestampOrIso(data.createdAt);
+    }
+
     // --- COLLECTION MATCHES ---
 
     // User Profile Documents
@@ -104,6 +121,18 @@ service cloud.firestore {
       allow list: if isSignedIn() && isOwner(resource.data.ownerId);
       allow create: if isSignedIn() && isOwner(incoming().ownerId) && isValidId(exportId) && isValidExportLog(incoming());
       allow update: if false; // Export traces are immutable, write-once audit records
+      allow delete: if isSignedIn() && isOwner(existing().ownerId);
+    }
+
+    // Private Per-User Uploaded Dataset & Batch Emails
+    match /user_dataset_emails/{docId} {
+      allow get: if isSignedIn() && isOwner(existing().ownerId);
+      allow list: if isSignedIn() && isOwner(resource.data.ownerId);
+      allow create: if isSignedIn() && isOwner(incoming().ownerId) && isValidId(docId) && isValidDatasetEmail(incoming());
+      allow update: if isSignedIn() && isOwner(existing().ownerId) && isOwner(incoming().ownerId) && isValidId(docId) && isValidDatasetEmail(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt;
       allow delete: if isSignedIn() && isOwner(existing().ownerId);
     }
 

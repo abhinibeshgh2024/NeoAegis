@@ -15,10 +15,10 @@ import {
 } from 'recharts';
 import { EmailRecord, TrainedModelArtifact, EvaluatedTestCase, EmailLabel } from './types';
 import {
+  CollectiveBackendStats,
   extractEngineeredFeatures,
   loadUserBatchRows,
-  loadUserTrainerSamples,
-  STARTER_TRAINING_CORPUS
+  loadUserTrainerSamples
 } from './src/lib/localMlEngine';
 import { analyzeEmailWithModel } from './spamEngine';
 import InfoButton from './src/components/InfoButton';
@@ -27,6 +27,7 @@ interface PerformanceMetricsProps {
   records: EmailRecord[];
   activeModel?: TrainedModelArtifact | null;
   currentUserUid?: string;
+  collectiveStats?: CollectiveBackendStats | null;
 }
 
 type CopyFormat = 'aligned' | 'tsv' | 'markdown';
@@ -197,7 +198,7 @@ function buildMetricsFromCases(
   };
 }
 
-export default function PerformanceMetrics({ records, activeModel, currentUserUid }: PerformanceMetricsProps) {
+export default function PerformanceMetrics({ records, activeModel, currentUserUid, collectiveStats }: PerformanceMetricsProps) {
   const [evalScope, setEvalScope] = useState<EvalScope>('all');
   const [benchmarkTick, setBenchmarkTick] = useState(0);
   const [isRunningBenchmark, setIsRunningBenchmark] = useState(false);
@@ -217,15 +218,16 @@ export default function PerformanceMetrics({ records, activeModel, currentUserUi
   const hasCustomTextModel = Boolean(
     activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0)
   );
+  const isCollectiveBackendActive = Boolean(activeModel?.ownerUid === 'collective-backend');
 
-  // 100% Real Dynamic Evaluation over User's Trained Model Test Split, Saved Batch CSV, Vault & Staged Trainer Corpus
+  // 100% Real Dynamic Evaluation strictly over current user's uploaded CSV, Staged Trainer, Vault, & Personal Test Split
   const liveEval = useMemo<LiveEvalOutput>(() => {
     const startTotal = typeof performance !== 'undefined' ? performance.now() : Date.now();
     let vectorMsAccum = 0;
 
     const stagedSamples = currentUserUid
       ? loadUserTrainerSamples(currentUserUid)
-      : [...STARTER_TRAINING_CORPUS];
+      : [];
     const batchRows = currentUserUid ? loadUserBatchRows(currentUserUid) || [] : [];
 
     const evaluateRawSample = (
@@ -386,8 +388,14 @@ export default function PerformanceMetrics({ records, activeModel, currentUserUi
     let sourceLabel = '';
 
     if (evalScope === 'model_test') {
-      selectedCases = dedupeCases([...modelTextCases, ...modelImageCases]);
-      sourceLabel = `Trained Model Held-Out Test Split (${selectedCases.length} cases)`;
+      const splitCases = dedupeCases([...modelTextCases, ...modelImageCases]);
+      if (splitCases.length > 0) {
+        selectedCases = splitCases;
+        sourceLabel = `Trained Model Held-Out Test Split (${selectedCases.length} cases)`;
+      } else {
+        selectedCases = dedupeCases([...trainerLiveCases, ...batchCases, ...vaultCases]);
+        sourceLabel = `Live Scoring (Your Data Evaluated by Collective Backend Model: ${selectedCases.length} cases)`;
+      }
     } else if (evalScope === 'batch_vault') {
       selectedCases = dedupeCases([...batchCases, ...vaultCases]);
       sourceLabel = `Saved Batch CSV (${batchCases.length}) + Personal Vault (${vaultCases.length})`;
@@ -395,20 +403,15 @@ export default function PerformanceMetrics({ records, activeModel, currentUserUi
       selectedCases = dedupeCases([...trainerLiveCases, ...batchCases]);
       sourceLabel = `Live Timed Run on Staged Trainer (${trainerLiveCases.length}) + Batch CSV (${batchCases.length})`;
     } else {
-      // 'all': If a trained model exists, combine Held-Out Test Split + Batch CSV + Vault Records.
-      // If no custom model is trained yet, run live baseline evaluation across Staged Trainer Corpus + Batch CSV + Vault!
-      if (hasCustomTextModel || modelImageCases.length > 0) {
-        selectedCases = dedupeCases([...modelTextCases, ...modelImageCases, ...batchCases, ...vaultCases]);
-        sourceLabel = `Trained Model Test Split (${modelTextCases.length + modelImageCases.length}) + Batch CSV (${batchCases.length}) + Vault (${vaultCases.length})`;
-      } else {
-        selectedCases = dedupeCases([...trainerLiveCases, ...batchCases, ...vaultCases]);
-        sourceLabel = `Baseline Live Eval: Staged Corpus (${trainerLiveCases.length}) + Batch CSV (${batchCases.length}) + Vault (${vaultCases.length})`;
-      }
+      selectedCases = dedupeCases([...modelTextCases, ...modelImageCases, ...trainerLiveCases, ...batchCases, ...vaultCases]);
+      sourceLabel = hasCustomTextModel
+        ? `${isCollectiveBackendActive ? 'Collective Backend Model' : 'Personal Model'} Eval: Your Trainer (${trainerLiveCases.length}) + Batch CSV (${batchCases.length}) + Vault (${vaultCases.length})${modelTextCases.length > 0 ? ` + Test Split (${modelTextCases.length})` : ''}`
+        : `Baseline Live Eval: Staged Trainer (${trainerLiveCases.length}) + Batch CSV (${batchCases.length}) + Vault (${vaultCases.length})`;
     }
 
     const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTotal;
     return buildMetricsFromCases(selectedCases, elapsedMs, vectorMsAccum, sourceLabel);
-  }, [records, activeModel, currentUserUid, evalScope, benchmarkTick, hasCustomTextModel]);
+  }, [records, activeModel, currentUserUid, evalScope, benchmarkTick, hasCustomTextModel, isCollectiveBackendActive]);
 
   // Bar Graph 1: Overall Performance Summary (%)
   const overallPerformanceBarData = useMemo(() => [
@@ -762,6 +765,41 @@ ${formattedTestCasesText}
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Privacy-Preserving Collective Backend Model Held-Out Summary */}
+      {(isCollectiveBackendActive || collectiveStats?.hasCollectiveModel) && activeModel && (
+        <div className="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs tabular-nums">
+          <div className="space-y-0.5">
+            <span className="font-semibold text-indigo-900 block">
+              Collective Backend Model Held-Out Evaluation (Aggregate Only — Cross-User Raw Emails Hidden)
+            </span>
+            <span className="text-indigo-700">
+              Trained on <strong>{collectiveStats?.totalCombinedEmails ?? activeModel.datasetSize}</strong> combined backend emails across{' '}
+              <strong>{collectiveStats?.contributorCount ?? 1}</strong> contributor(s) &middot; {activeModel.vocabularySize} vocabulary tokens.
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 font-mono">
+            <span className="px-2.5 py-1 bg-white border border-indigo-200 rounded-lg text-emerald-700 font-semibold">
+              Acc: {(activeModel.evaluation.accuracy * 100).toFixed(1)}%
+            </span>
+            <span className="px-2.5 py-1 bg-white border border-indigo-200 rounded-lg text-indigo-700 font-semibold">
+              F1: {(activeModel.evaluation.f1Score * 100).toFixed(1)}%
+            </span>
+            <span className="px-2.5 py-1 bg-white border border-indigo-200 rounded-lg text-amber-700 font-semibold">
+              AUC: {activeModel.evaluation.rocAUC}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Blank Initial State Notice when user has not uploaded or scanned emails yet */}
+      {totalEvaluated === 0 && (
+        <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-5 text-center text-xs text-slate-600">
+          Your personal sandbox datasets currently start blank (<strong className="text-slate-900">0 emails</strong>). Upload a CSV/JSON dataset in{' '}
+          <strong className="text-slate-900">Batch CSV Auditor</strong> or <strong className="text-slate-900">Trainer</strong>, or scan a message in{' '}
+          <strong className="text-slate-900">Mail Body Scanner</strong> to populate live Accuracy, F1, Confusion Matrix, and Test Case rows.
         </div>
       )}
 

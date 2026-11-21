@@ -8,7 +8,7 @@ import {
   LayoutDashboard, Mail, Image, FileSpreadsheet, BrainCircuit, Bot, Gauge,
   ShieldCheck, Activity, Sparkles, Clock, AlertTriangle, 
   Settings, Shield, ChevronRight, CheckCircle2, XCircle, User, LogIn, UserPlus, LogOut, Lock, X,
-  Menu, Info, Database, PlusCircle, Phone, Moon, Sun, Calendar
+  Menu, Info, Database, Phone, Moon, Sun, Calendar
 } from 'lucide-react';
 import { 
   EnclaveUser,
@@ -24,14 +24,20 @@ import {
   signInWithEnclaveGoogle,
   signOutEnclaveSession,
   fetchEnclaveUserData,
+  fetchUserDatasetEmails,
+  getFirebaseIdTokenSafely,
   saveEmailToEnclaveProfile,
+  saveUserDatasetEmailsBatch,
   getUserPortalStats,
   incrementUserEmailsParsed,
   incrementUserWorkingSeconds,
   formatWorkingDuration
 } from './src/lib/firebase';
 import {
+  CollectiveBackendStats,
   classifyGranularEmailTier,
+  contributeSamplesToBackend,
+  fetchCollectiveModelFromBackend,
   loadUserBatchRows,
   loadUserTrainedModel,
   loadUserTrainerSamples,
@@ -49,7 +55,7 @@ import TrainerLab from './src/components/TrainerLab';
 import UserProfile from './src/components/UserProfile';
 import AboutSection, { NeoAegisSymbol } from './src/components/AboutSection';
 import InfoButton from './src/components/InfoButton';
-import { MOCK_EMAILS, analyzeEmail, analyzeEmailWithModel } from './spamEngine';
+import { analyzeEmailWithModel } from './spamEngine';
 import { EmailRecord, TrainedModelArtifact, TrainingSample, ImageTrainingSample } from './types';
 
 type PortalTab = 'dashboard' | 'email' | 'image' | 'batch' | 'rag' | 'metrics' | 'trainer' | 'profile' | 'about';
@@ -105,16 +111,100 @@ export default function App() {
   const [emailsParsedCount, setEmailsParsedCount] = useState<number>(0);
   const [workingSeconds, setWorkingSeconds] = useState<number>(0);
   const [activeModel, setActiveModel] = useState<TrainedModelArtifact | null>(null);
+  const [collectiveStats, setCollectiveStats] = useState<CollectiveBackendStats | null>(null);
   const [modelVersion, setModelVersion] = useState<number>(0);
   const [incomingEmailSamples, setIncomingEmailSamples] = useState<TrainingSample[]>([]);
   const [incomingImageSamples, setIncomingImageSamples] = useState<ImageTrainingSample[]>([]);
   const [preferredTrainerUnit, setPreferredTrainerUnit] = useState<'text' | 'image'>('text');
 
-  // Load strict per-user isolated records & telemetry
+  // Load strict per-user isolated records, private uploaded datasets & collective backend model
   const syncUserIsolatedVault = async (uid: string) => {
     const stats = getUserPortalStats(uid);
     setWorkingSeconds(stats.workingSeconds);
 
+    // 1. Fetch collective backend model + aggregate stats first (zero cross-user raw emails)
+    const idToken = await getFirebaseIdTokenSafely();
+    const { stats: backendStats } = await fetchCollectiveModelFromBackend(uid, idToken);
+    if (backendStats) {
+      setCollectiveStats(backendStats);
+    }
+
+    // 2. Hydrate this user's private persisted dataset emails from Firestore strictly matching ownerId == uid
+    const cloudDatasetDocs = await fetchUserDatasetEmails(uid);
+    if (cloudDatasetDocs.length > 0) {
+      const existingTrainer = loadUserTrainerSamples(uid);
+      const trainerKeySet = new Set(
+        existingTrainer.map(s => `${String(s.subject).trim().toLowerCase()}::${String(s.sender).trim().toLowerCase()}`)
+      );
+      const hydratedTrainerAdditions: TrainingSample[] = [];
+      for (const doc of cloudDatasetDocs) {
+        const key = `${String(doc.subject).trim().toLowerCase()}::${String(doc.sender).trim().toLowerCase()}`;
+        if (!trainerKeySet.has(key)) {
+          trainerKeySet.add(key);
+          hydratedTrainerAdditions.push({
+            id: doc.id,
+            subject: doc.subject,
+            sender: doc.sender,
+            body: doc.body,
+            rawHeaders: doc.rawHeaders,
+            label: doc.label,
+            granularTier: doc.granularTier,
+            source: doc.source === 'audit_stream' ? 'audit_stream' : doc.source === 'manual' ? 'manual' : 'upload'
+          });
+        }
+      }
+      if (hydratedTrainerAdditions.length > 0) {
+        saveUserTrainerSamples(uid, [...hydratedTrainerAdditions, ...existingTrainer]);
+      }
+
+      const existingBatch = loadUserBatchRows(uid) || [];
+      const batchKeySet = new Set(
+        existingBatch.map((b: any) => `${String(b.subject).trim().toLowerCase()}::${String(b.sender).trim().toLowerCase()}`)
+      );
+      const hydratedBatchAdditions: any[] = [];
+      for (const doc of cloudDatasetDocs) {
+        const key = `${String(doc.subject).trim().toLowerCase()}::${String(doc.sender).trim().toLowerCase()}`;
+        if (!batchKeySet.has(key)) {
+          batchKeySet.add(key);
+          hydratedBatchAdditions.push({
+            id: doc.id,
+            subject: doc.subject,
+            sender: doc.sender,
+            body: doc.body,
+            rawHeaders: doc.rawHeaders,
+            actualLabel: doc.label,
+            actual: doc.label === 'legitimate' ? 'ham' : 'spam',
+            granularTier: doc.granularTier,
+            source: doc.source
+          });
+        }
+      }
+      if (hydratedBatchAdditions.length > 0) {
+        saveUserBatchRows(uid, [...hydratedBatchAdditions, ...existingBatch]);
+      }
+
+      // If collective backend corpus is empty (e.g. cold restart), backfill this user's saved samples automatically
+      if (!backendStats || backendStats.totalCombinedEmails === 0) {
+        const backfillSamples: TrainingSample[] = cloudDatasetDocs.map(doc => ({
+          id: doc.id,
+          subject: doc.subject,
+          sender: doc.sender,
+          body: doc.body,
+          rawHeaders: doc.rawHeaders,
+          label: doc.label,
+          granularTier: doc.granularTier,
+          source: 'upload'
+        }));
+        const synced = await contributeSamplesToBackend(uid, idToken, backfillSamples, undefined, true);
+        if (synced.stats) setCollectiveStats(synced.stats);
+      }
+    }
+
+    const resolvedModel = loadUserTrainedModel(uid);
+    setActiveModel(resolvedModel);
+    setModelVersion(v => v + 1);
+
+    // 3. Hydrate Personal Audit Stream & Exports strictly for this uid
     const { emails: savedEmails, exports: savedExports } = await fetchEnclaveUserData(uid);
     const reconstructedRecords: EmailRecord[] = savedEmails.map((item: any) => {
       if (item.fullRecord && item.fullRecord.metrics) {
@@ -151,7 +241,7 @@ export default function App() {
       return reconstructedRecords[0] || null;
     });
 
-    const totalSaved = savedEmails.length + savedExports.length;
+    const totalSaved = savedEmails.length + savedExports.length + cloudDatasetDocs.length;
     setSavedDataCount(totalSaved);
     setEmailsParsedCount(Math.max(stats.emailsParsedCount, reconstructedRecords.length));
   };
@@ -171,6 +261,7 @@ export default function App() {
         // Strict isolation: clear all user data and active model immediately on sign-out
         setActiveMlUserUid(null);
         setActiveModel(null);
+        setCollectiveStats(null);
         setModelVersion(v => v + 1);
         setEmails([]);
         setSelectedEmail(null);
@@ -184,7 +275,7 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Re-score vault emails immediately whenever user trains, imports, or resets local ML weights
+  // Re-score vault emails immediately whenever user trains, imports, or switches local/collective ML weights
   const handleModelUpdated = (nextModel: TrainedModelArtifact | null) => {
     setActiveModel(nextModel);
     setModelVersion(v => v + 1);
@@ -204,6 +295,17 @@ export default function App() {
       });
       return updated;
     });
+  };
+
+  const handleCollectiveModelSynced = (
+    collectiveModel: TrainedModelArtifact | null,
+    stats: CollectiveBackendStats | null
+  ) => {
+    if (stats) {
+      setCollectiveStats(stats);
+    }
+    const resolved = loadUserTrainedModel(currentUser?.uid) || collectiveModel;
+    handleModelUpdated(resolved);
   };
 
   // Per-user Working Hours Duration live tracker (increments every second while logged in)
@@ -399,18 +501,6 @@ export default function App() {
       await saveEmailToEnclaveProfile(currentUser.uid, record);
       await syncUserIsolatedVault(currentUser.uid);
     }
-  };
-
-  // Optional starter sample loader for brand-new users whose isolated vault starts empty
-  const handleLoadStarterSampleForUser = async () => {
-    if (!currentUser) return;
-    const starterTemplate = MOCK_EMAILS[0];
-    const personalSample: EmailRecord = {
-      ...starterTemplate,
-      id: `usr-${currentUser.uid.slice(0, 5)}-${Date.now().toString().slice(-4)}`,
-      timestamp: new Date().toISOString()
-    };
-    await handleSingleEmailAnalyzed(personalSample);
   };
 
   const navItems: { id: PortalTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [
@@ -1135,7 +1225,6 @@ export default function App() {
                     syncUserIsolatedVault(currentUser.uid);
                   }
                 }}
-                onSeedStarterSample={handleLoadStarterSampleForUser}
               />
             )}
 
@@ -1145,13 +1234,43 @@ export default function App() {
                 onAnalyzeFinished={handleSingleEmailAnalyzed}
                 activeModel={activeModel}
                 modelVersion={modelVersion}
-                onSendToTrainer={(sample) => {
+                onSendToTrainer={async (sample) => {
                   setIncomingEmailSamples(prev => [sample, ...prev]);
                   if (currentUser) {
                     const current = loadUserTrainerSamples(currentUser.uid);
                     if (!current.some(s => s.id === sample.id)) {
                       saveUserTrainerSamples(currentUser.uid, [sample, ...current]);
                     }
+                    const tierInfo = classifyGranularEmailTier(
+                      sample.subject,
+                      sample.body,
+                      sample.sender,
+                      sample.rawHeaders || '',
+                      sample.granularTier || sample.label
+                    );
+                    await saveUserDatasetEmailsBatch(currentUser.uid, [
+                      {
+                        id: sample.id,
+                        subject: sample.subject,
+                        sender: sample.sender,
+                        body: sample.body,
+                        rawHeaders: sample.rawHeaders || `From: ${sample.sender}`,
+                        label: sample.label,
+                        granularTier: sample.granularTier || tierInfo.granularTier,
+                        spamScore: 0,
+                        phishingLikelihood: 0,
+                        source: 'audit_stream'
+                      }
+                    ]);
+                    const idToken = await getFirebaseIdTokenSafely();
+                    const synced = await contributeSamplesToBackend(
+                      currentUser.uid,
+                      idToken,
+                      [sample],
+                      undefined,
+                      true
+                    );
+                    handleCollectiveModelSynced(synced.model, synced.stats);
                   }
                   setPreferredTrainerUnit('text');
                 }}
@@ -1174,7 +1293,8 @@ export default function App() {
               <BatchAnalyzer 
                 currentUserUid={currentUser?.uid}
                 onAddEmailRecords={handleAddNewEmails}
-                onSendBatchToTrainer={(batchSamples) => {
+                onCollectiveModelSynced={handleCollectiveModelSynced}
+                onSendBatchToTrainer={async (batchSamples) => {
                   setIncomingEmailSamples(prev => [...batchSamples, ...prev]);
                   if (currentUser) {
                     const current = loadUserTrainerSamples(currentUser.uid);
@@ -1183,6 +1303,15 @@ export default function App() {
                     if (additions.length > 0) {
                       saveUserTrainerSamples(currentUser.uid, [...additions, ...current]);
                     }
+                    const idToken = await getFirebaseIdTokenSafely();
+                    const synced = await contributeSamplesToBackend(
+                      currentUser.uid,
+                      idToken,
+                      batchSamples,
+                      undefined,
+                      true
+                    );
+                    handleCollectiveModelSynced(synced.model, synced.stats);
                   }
                   setPreferredTrainerUnit('text');
                   setCurrentTab('trainer');
@@ -1201,6 +1330,7 @@ export default function App() {
                 records={emails}
                 activeModel={activeModel}
                 currentUserUid={currentUser?.uid}
+                collectiveStats={collectiveStats}
               />
             )}
 
@@ -1214,6 +1344,8 @@ export default function App() {
                 incomingImageSamples={incomingImageSamples}
                 preferredUnit={preferredTrainerUnit}
                 onArchiveUploadedCsvEmails={handleArchiveTrainerCsvEmails}
+                collectiveStats={collectiveStats}
+                onCollectiveModelSynced={handleCollectiveModelSynced}
               />
             )}
 
@@ -1263,9 +1395,9 @@ export default function App() {
               <div className="p-6 bg-[#f8f9fa] border border-[#dadce0] rounded-xl text-center space-y-3">
                 <Mail className="w-7 h-7 text-[#1a73e8] mx-auto" />
                 <div className="space-y-1">
-                  <h3 className="text-xs font-medium text-[#202124]">No Saved Emails Yet</h3>
+                  <h3 className="text-xs font-medium text-[#202124]">Blank Personal Stream</h3>
                   <p className="text-[11px] text-[#5f6368] leading-relaxed">
-                    Your personal analyst profile starts clean. Scan a message in the <strong className="text-[#202124]">Mail Body Scanner</strong> or load a sample record to begin.
+                    Your private vault starts completely empty with zero pre-made emails. Scan a message in <strong className="text-[#202124]">Mail Body Scanner</strong> or upload a CSV in <strong className="text-[#202124]">Batch CSV Auditor</strong>.
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
@@ -1278,11 +1410,11 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={handleLoadStarterSampleForUser}
+                    onClick={() => setCurrentTab('batch')}
                     className="w-full py-2 bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] text-xs font-medium rounded-full transition flex items-center justify-center gap-1.5 cursor-pointer"
                   >
-                    <PlusCircle className="w-3.5 h-3.5" />
-                    <span>Load Sample into My Vault</span>
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Upload Batch CSV</span>
                   </button>
                 </div>
               </div>

@@ -46,6 +46,26 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of export action" }
       },
       "required": ["id", "fileName", "fileType", "recordCount", "ownerId", "createdAt"]
+    },
+    "DatasetEmail": {
+      "title": "User Dataset Email Record",
+      "description": "Private per-user uploaded CSV/Trainer email record stored strictly under ownerId",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique dataset email document ID" },
+        "ownerId": { "type": "string", "description": "UID of the user who uploaded this record" },
+        "subject": { "type": "string", "maxLength": 300, "description": "Email subject" },
+        "sender": { "type": "string", "maxLength": 150, "description": "Sender email" },
+        "body": { "type": "string", "maxLength": 15000, "description": "Email body content" },
+        "rawHeaders": { "type": "string", "maxLength": 10000, "description": "Raw envelope headers" },
+        "label": { "type": "string", "enum": ["legitimate", "spam", "phishing"], "description": "Ground truth or primary classification label" },
+        "granularTier": { "type": "string", "enum": ["complete_legitimate", "suspicious", "spam", "highly_spam", "phishing", "highly_phishing"], "description": "Granular risk category" },
+        "spamScore": { "type": "integer", "description": "Evaluated spam score 0..100" },
+        "phishingLikelihood": { "type": "integer", "description": "Evaluated phishing score 0..100" },
+        "source": { "type": "string", "enum": ["upload", "csv_upload", "trainer_sync", "audit_stream", "manual"], "description": "Originating workflow" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Record creation timestamp" }
+      },
+      "required": ["id", "ownerId", "subject", "sender", "body", "rawHeaders", "label", "granularTier", "spamScore", "phishingLikelihood", "source", "createdAt"]
     }
   },
   "firestore": {
@@ -60,6 +80,10 @@
     "/exports/{exportId}": {
       "schema": "ExportLog",
       "description": "Root collection for exported log histories"
+    },
+    "/user_dataset_emails/{docId}": {
+      "schema": "DatasetEmail",
+      "description": "Root collection for private per-user uploaded dataset and batch emails"
     }
   }
 }

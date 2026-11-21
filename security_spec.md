@@ -4,6 +4,7 @@
 *   **User Profiles (`/users/{userId}`)**: A user profile can only be read and written by its authenticated owner. Setting role/privileges or updating other profiles is strictly denied.
 *   **Scanned Emails (`/scanned_emails/{emailId}`)**: An email record is private to its creator (`ownerId == request.auth.uid`). No global reads or list permissions are granted to other authenticated accounts.
 *   **Export Logs (`/exports/{exportId}`)**: Downloaded audit logs must belong to the active session owner (`ownerId == request.auth.uid`).
+*   **User Dataset Emails (`/user_dataset_emails/{docId}`)**: Uploaded CSV/Trainer dataset emails are strictly private to their owner (`ownerId == request.auth.uid`). No cross-user reads or listings are allowed; only anonymized aggregate training occurs on the backend.
 
 ---
 

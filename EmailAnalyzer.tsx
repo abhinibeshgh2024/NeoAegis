@@ -6,9 +6,9 @@
 import React, { useState, useEffect } from 'react';
 import {
   ShieldAlert, Mail, RefreshCw, HelpCircle, AlertTriangle,
-  AlertCircle, Sparkles, AlertOctagon, CheckCircle2, BrainCircuit
+  AlertCircle, Sparkles, AlertOctagon, CheckCircle2, BrainCircuit, Trash2
 } from 'lucide-react';
-import { analyzeEmailWithModel, MOCK_EMAILS } from './spamEngine';
+import { analyzeEmailWithModel } from './spamEngine';
 import { EmailLabel, EmailRecord, SpamMetrics, TrainedModelArtifact, LocalPredictionResult, TrainingSample } from './types';
 import InfoButton from './src/components/InfoButton';
 
@@ -34,7 +34,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
   const [trainerFeedbackLabel, setTrainerFeedbackLabel] = useState<EmailLabel>('phishing');
   const [trainerSentBanner, setTrainerSentBanner] = useState<string | null>(null);
 
-  // Initialize form when a preset / selected email is updated from dashboard
+  // Initialize form strictly from selected record (starts blank when none selected)
   useEffect(() => {
     if (selectedEmail) {
       setSubject(selectedEmail.subject);
@@ -46,20 +46,18 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
       const res = analyzeEmailWithModel(selectedEmail.subject, selectedEmail.body, selectedEmail.rawHeaders, selectedEmail.sender);
       setMetrics(res.metrics);
       setModelPrediction(res.modelPrediction);
-    } else if (MOCK_EMAILS.length > 0) {
-      const first = MOCK_EMAILS[0];
-      setSubject(first.subject);
-      setSender(first.sender);
-      setRecipient(first.recipient);
-      setBody(first.body);
-      setHeaders(first.rawHeaders);
-      const res = analyzeEmailWithModel(first.subject, first.body, first.rawHeaders, first.sender);
-      setMetrics(res.metrics);
-      setModelPrediction(res.modelPrediction);
+    } else {
+      setSubject('');
+      setSender('');
+      setRecipient('');
+      setBody('');
+      setHeaders('');
+      setMetrics(null);
+      setModelPrediction(null);
     }
   }, [selectedEmail]);
 
-  // Re-evaluate immediately when user trains, imports, or resets their local ML model
+  // Re-evaluate immediately when user trains, imports, or collective backend model updates
   useEffect(() => {
     if (!subject && !body) return;
     const cleanHeaders = headers || `From: ${sender}\nTo: ${recipient}\nSubject: ${subject}\nDKIM: Pass\nSPF: Pass`;
@@ -68,8 +66,9 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
     setModelPrediction(res.modelPrediction);
   }, [modelVersion, activeModel]);
 
-  // Handle live re-analysis
+  // Handle live analysis
   const handleAnalyze = () => {
+    if (!subject.trim() && !body.trim()) return;
     const cleanHeaders = headers || `From: ${sender}\nTo: ${recipient}\nSubject: ${subject}\nDKIM: Pass\nSPF: Pass`;
     const res = analyzeEmailWithModel(subject, body, cleanHeaders, sender);
     setMetrics(res.metrics);
@@ -77,9 +76,9 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
 
     const newRecord: EmailRecord = {
       id: selectedEmail?.id || `custom-${Date.now()}`,
-      subject,
-      sender,
-      recipient,
+      subject: subject.trim() || '(No Subject)',
+      sender: sender.trim() || 'unknown@sender.org',
+      recipient: recipient.trim() || 'analyst@organization.com',
       body,
       rawHeaders: cleanHeaders,
       timestamp: new Date().toISOString(),
@@ -90,21 +89,14 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
     onAnalyzeFinished(newRecord);
   };
 
-  // Load Presets
-  const loadPreset = (preset: EmailRecord) => {
-    setSubject(preset.subject);
-    setSender(preset.sender);
-    setRecipient(preset.recipient);
-    setBody(preset.body);
-    setHeaders(preset.rawHeaders);
-    const res = analyzeEmailWithModel(preset.subject, preset.body, preset.rawHeaders, preset.sender);
-    setMetrics(res.metrics);
-    setModelPrediction(res.modelPrediction);
-    onAnalyzeFinished({
-      ...preset,
-      isSpam: res.metrics.spamScore > 50 || res.metrics.phishingLikelihood > 45,
-      metrics: res.metrics
-    });
+  const handleClearForm = () => {
+    setSubject('');
+    setSender('');
+    setRecipient('');
+    setBody('');
+    setHeaders('');
+    setMetrics(null);
+    setModelPrediction(null);
   };
 
   return (
@@ -118,30 +110,20 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
             <h3 className="text-base font-display font-semibold text-slate-900">Inbound Headers & Body Parser</h3>
             <InfoButton
               title="Inbound Headers & Body Parser"
-              description="Simulate, edit, or load sample emails and header variables (From, To, Subject, Body, SPF/DKIM) to compute 34-point security scores."
+              description="Paste or enter any email subject, sender, body, and header variables (From, To, SPF, DKIM) to classify and extract 34 security metrics."
               align="left"
             />
           </div>
-        </div>
-
-        {/* Preset Selectors */}
-        <div>
-          <span className="text-[10px] font-mono text-slate-400 uppercase">LOAD SPAM / PHISHING SAMPLES</span>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {MOCK_EMAILS.map(preset => (
-              <button
-                key={preset.id}
-                onClick={() => loadPreset(preset)}
-                className={`px-2.5 py-1.5 text-xs font-mono rounded-lg border transition-all duration-200 ${
-                  subject === preset.subject 
-                    ? 'border-indigo-200 bg-indigo-50 text-indigo-700 font-bold shadow-2xs' 
-                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 shadow-3xs'
-                }`}
-              >
-                {preset.id.toUpperCase()}: {preset.subject.substring(0, 15)}...
-              </button>
-            ))}
-          </div>
+          {(subject || sender || body || headers) && (
+            <button
+              type="button"
+              onClick={handleClearForm}
+              className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-full text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>Clear</span>
+            </button>
+          )}
         </div>
 
         {/* Input variables */}
@@ -206,11 +188,13 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
         </div>
 
         <button 
+          type="button"
           onClick={handleAnalyze}
-          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-mono rounded-xl transition duration-200 flex items-center justify-center space-x-2 cursor-pointer shadow-xs"
+          disabled={!subject.trim() && !body.trim()}
+          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-45 text-white text-xs font-mono rounded-xl transition duration-200 flex items-center justify-center space-x-2 cursor-pointer shadow-xs"
         >
           <RefreshCw className="h-4 w-4" />
-          <span>RE-RUN CLASSIFIER ENGINE &amp; EXTRACT METRICS</span>
+          <span>SCAN EMAIL &amp; EXTRACT 34 METRICS</span>
         </button>
 
         {onSendToTrainer && (
@@ -265,7 +249,7 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
       <div className="space-y-6 lg:col-span-6">
         
         {/* Dynamic Risk Meter Card */}
-        {metrics && (
+        {metrics ? (
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-6 space-y-6 shadow-3xs">
             
             {/* Headers indicators */}
@@ -446,6 +430,20 @@ export default function EmailAnalyzer({ onAnalyzeFinished, selectedEmail, active
               )}
             </div>
 
+          </div>
+        ) : (
+          <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-8 text-center space-y-3 shadow-3xs">
+            <Mail className="h-8 w-8 text-indigo-500 mx-auto" />
+            <h4 className="text-sm font-medium text-slate-900">Ready for Email Assessment</h4>
+            <p className="text-xs text-slate-600 max-w-sm mx-auto leading-relaxed">
+              Enter or paste an email&apos;s sender, subject, and body on the left—or select a saved message from your Personal Audit Stream—then click <strong className="text-slate-900">Scan Email &amp; Extract 34 Metrics</strong>.
+            </p>
+            <div className="text-[11px] font-mono text-indigo-700">
+              Active Engine:{' '}
+              {activeModel && (activeModel.datasetSize > 0 || activeModel.vocabulary.length > 0)
+                ? `${activeModel.ownerUid === 'collective-backend' ? 'Collective Backend Model' : 'Trained Personal Model'} (${activeModel.vocabularySize} tokens)`
+                : 'Baseline 34-Metric Heuristics'}
+            </div>
           </div>
         )}
 

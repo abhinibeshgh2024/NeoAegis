@@ -11,7 +11,7 @@ import {
 import { 
   ShieldAlert, ShieldCheck, Activity, Award, CheckCircle, XCircle, 
   AlertTriangle, Key, Terminal, BarChart4, Compass, Info, FileSpreadsheet,
-  Download, FileText, Clock, Database, Mail, PlusCircle
+  Download, FileText, Clock, Database, Mail
 } from 'lucide-react';
 import { EmailRecord, SpamMetrics, TrainedModelArtifact } from './types';
 import { logExportToEnclaveProfile } from './src/lib/firebase';
@@ -25,7 +25,6 @@ interface DashboardProps {
   savedDataCount?: number;
   emailsParsedCount?: number;
   formattedWorkingDuration?: string;
-  onSeedStarterSample?: () => void;
   onExportLogged?: () => void;
   activeModel?: TrainedModelArtifact | null;
 }
@@ -38,7 +37,6 @@ export default function Dashboard({
   savedDataCount = 0,
   emailsParsedCount = 0,
   formattedWorkingDuration = '00h 00m 00s',
-  onSeedStarterSample,
   onExportLogged,
   activeModel
 }: DashboardProps) {
@@ -65,42 +63,42 @@ export default function Dashboard({
     'Defense Rating': r.metrics.defenseRating,
   }));
 
-  // Target current metrics
+  // Target current metrics (all zeroed cleanly when user has no scanned/uploaded emails yet)
   const activeMetrics: SpamMetrics = selectedEmail?.metrics || records[0]?.metrics || {
-    spamScore: 45,
-    phishingLikelihood: 35,
-    senderReputationRank: 'C',
-    keywordDangerDensity: 40,
-    urgencyCoefficient: 50,
-    financialSensationIndex: 25,
-    authorityMimicryIndex: 30,
-    subjectSentimentDivergence: 10,
-    capitalizationRatio: 12,
-    punctuationExaggerationIndex: 20,
+    spamScore: 0,
+    phishingLikelihood: 0,
+    senderReputationRank: 'A',
+    keywordDangerDensity: 0,
+    urgencyCoefficient: 0,
+    financialSensationIndex: 0,
+    authorityMimicryIndex: 0,
+    subjectSentimentDivergence: 0,
+    capitalizationRatio: 0,
+    punctuationExaggerationIndex: 0,
     unusualHoursTrigger: false,
-    suspiciousLinkCount: 1,
-    mismatchedDomainsCount: 1,
+    suspiciousLinkCount: 0,
+    mismatchedDomainsCount: 0,
     shortenedUrlsCount: 0,
-    trackingPixelsDetected: 1,
+    trackingPixelsDetected: 0,
     ipBlacklistMatches: 0,
-    dkimStatus: 'Pass',
-    spfStatus: 'Pass',
-    dmarcComplianceScore: 80,
-    inboundHopCount: 2,
-    relayServerRiskIndex: 30,
+    dkimStatus: 'None',
+    spfStatus: 'None',
+    dmarcComplianceScore: 0,
+    inboundHopCount: 0,
+    relayServerRiskIndex: 0,
     imageToTextPayloadRatio: 0,
     ocrSuspiciousWordsCount: 0,
     qrCodePresenceRisk: false,
     visualColorRiskLevel: 0,
     metadataAgeOfImageDays: 0,
-    messageEntropy: 45,
+    messageEntropy: 0,
     zeroFontHiddenTextDetected: false,
     senderRecipientDiscrepancy: false,
     attachmentRiskIndex: 0,
-    vectorSimilarityScore: 24,
-    rulesEvaluatedCount: 37,
-    rulesTriggeredCount: 4,
-    defenseRating: 75
+    vectorSimilarityScore: 0,
+    rulesEvaluatedCount: 0,
+    rulesTriggeredCount: 0,
+    defenseRating: 0
   };
 
   // High-danger vector metrics formatting for radar
@@ -302,16 +300,6 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
-          {records.length === 0 && onSeedStarterSample && (
-            <button
-              onClick={onSeedStarterSample}
-              className="flex-1 md:flex-none px-4 py-2 bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1967d2] border border-[#aecbfa] text-xs font-medium rounded-full transition duration-150 flex items-center justify-center space-x-1.5 cursor-pointer"
-            >
-              <PlusCircle className="w-4 h-4" />
-              <span>Scan Starter Sample Mail</span>
-            </button>
-          )}
-
           <button 
             onClick={handleExportIncidentDossier}
             disabled={records.length === 0}
@@ -390,7 +378,7 @@ End Forensic Dossier. CONFIDENTIAL. For immediate SOC retention.
           </div>
           <div className="mt-3 flex items-center space-x-1.5 text-[11px] text-[#1e8e3e] font-medium">
             <Clock className="h-3.5 w-3.5" />
-            <span>Defense resilience: {avgDefense || 92}%</span>
+            <span>Defense resilience: {avgDefense}%</span>
           </div>
         </div>
 

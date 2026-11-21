@@ -7,7 +7,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   BrainCircuit, Upload, Download, Play, RotateCcw, Plus, Trash2,
   Database, CheckCircle2, AlertTriangle, FileJson, FileSpreadsheet,
-  Sliders, Sparkles, Search, Layers, Image as ImageIcon, Eye, X, Check
+  Sliders, Sparkles, Search, Layers, Image as ImageIcon, Eye, X, Check, Server
 } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -25,7 +25,9 @@ import {
   ImagePredictionResult
 } from '../../types';
 import {
-  STARTER_TRAINING_CORPUS,
+  CSV_SCHEMA_EXAMPLE_CONTENT,
+  CollectiveBackendStats,
+  ModelSelectionMode,
   parseDatasetFileContent,
   trainLocalClassifier,
   clearUserTrainedModel,
@@ -37,12 +39,22 @@ import {
   loadUserTrainerImages,
   saveUserTrainerImages,
   classifyGranularEmailTier,
-  GRANULAR_TIER_META
+  GRANULAR_TIER_META,
+  getActiveModelPreference,
+  setActiveModelPreference,
+  loadUserTrainedModel,
+  loadPersonalTrainedModel,
+  contributeSamplesToBackend,
+  retrainCollectiveModelOnBackend
 } from '../lib/localMlEngine';
+import {
+  deleteUserDatasetEmail,
+  getFirebaseIdTokenSafely,
+  saveUserDatasetEmailsBatch
+} from '../lib/firebase';
 import { analyzeEmailWithModel } from '../../spamEngine';
 import {
   extractImageTelemetryFromSource,
-  generateStarterImageSamples,
   predictImageWithModel,
   trainImageClassifier
 } from '../lib/imageVisionEngine';
@@ -57,6 +69,8 @@ interface TrainerLabProps {
   incomingImageSamples?: ImageTrainingSample[];
   preferredUnit?: 'text' | 'image';
   onArchiveUploadedCsvEmails?: (samples: TrainingSample[]) => void;
+  collectiveStats?: CollectiveBackendStats | null;
+  onCollectiveModelSynced?: (model: TrainedModelArtifact | null, stats: CollectiveBackendStats | null) => void;
 }
 
 interface PendingCsvRow extends TrainingSample {
@@ -102,10 +116,14 @@ export default function TrainerLab({
   incomingEmailSamples = [],
   incomingImageSamples = [],
   preferredUnit,
-  onArchiveUploadedCsvEmails
+  onArchiveUploadedCsvEmails,
+  collectiveStats,
+  onCollectiveModelSynced
 }: TrainerLabProps) {
   // Active Unit Mode inside Trainer: Text & Header Unit vs Image Training Unit
   const [trainerUnit, setTrainerUnit] = useState<'text' | 'image'>(preferredUnit || 'text');
+  const [modelMode, setModelMode] = useState<ModelSelectionMode>(() => getActiveModelPreference(currentUserUid));
+  const [isRetrainingCollective, setIsRetrainingCollective] = useState(false);
 
   useEffect(() => {
     if (preferredUnit) {
@@ -113,7 +131,7 @@ export default function TrainerLab({
     }
   }, [preferredUnit]);
 
-  // Text Dataset Staging State (hydrated per-user from localStorage so CSVs & edits persist)
+  // Text Dataset Staging State (blank by default — hydrated strictly per-user)
   const [samples, setSamples] = useState<TrainingSample[]>(() => loadUserTrainerSamples(currentUserUid));
   const [labelFilter, setLabelFilter] = useState<'all' | EmailLabel>('all');
   const [tierFilter, setTierFilter] = useState<'all' | GranularThreatTier>('all');
@@ -129,12 +147,12 @@ export default function TrainerLab({
   const [modalTierFilter, setModalTierFilter] = useState<'all' | GranularThreatTier>('all');
   const [alsoSyncToOtherSections, setAlsoSyncToOtherSections] = useState(true);
 
-  // Image Dataset Staging State (hydrated per-user from localStorage)
+  // Image Dataset Staging State (blank by default — hydrated strictly per-user)
   const [imageSamples, setImageSamples] = useState<ImageTrainingSample[]>(() => {
     const saved = loadUserTrainerImages(currentUserUid);
     return saved !== null ? saved : [];
   });
-  const [imagesHydrated, setImagesHydrated] = useState<boolean>(() => loadUserTrainerImages(currentUserUid) !== null);
+  const [imagesHydrated, setImagesHydrated] = useState<boolean>(true);
   const [imageFilter, setImageFilter] = useState<'all' | EmailLabel>('all');
   const [imageSearch, setImageSearch] = useState('');
   const [uploadImageLabel, setUploadImageLabel] = useState<EmailLabel>('phishing');
@@ -184,14 +202,10 @@ export default function TrainerLab({
     if (loadedUidRef.current === currentUserUid) return;
     loadedUidRef.current = currentUserUid;
     setSamples(loadUserTrainerSamples(currentUserUid));
+    setModelMode(getActiveModelPreference(currentUserUid));
     const savedImgs = loadUserTrainerImages(currentUserUid);
-    if (savedImgs !== null) {
-      setImageSamples(savedImgs);
-      setImagesHydrated(true);
-    } else {
-      setImageSamples([]);
-      setImagesHydrated(false);
-    }
+    setImageSamples(savedImgs !== null ? savedImgs : []);
+    setImagesHydrated(true);
   }, [currentUserUid]);
 
   // Persist text dataset whenever user uploads CSV, adds, re-labels, or removes samples
@@ -200,33 +214,14 @@ export default function TrainerLab({
     saveUserTrainerSamples(currentUserUid, samples);
   }, [samples, currentUserUid]);
 
-  // Seed 12 starter images only when user has no persisted image dataset yet
+  // Sync first uploaded image into probe slot if none selected
   useEffect(() => {
-    if (imagesHydrated) {
-      if (imageSamples.length > 0 && !imageProbeSample) {
-        const defaultProbe = imageSamples[8] || imageSamples[0];
-        setImageProbeSample(defaultProbe);
-        setImageProbeOcr(defaultProbe.ocrText);
-      }
-      return;
+    if (imageSamples.length > 0 && !imageProbeSample) {
+      const defaultProbe = imageSamples[0];
+      setImageProbeSample(defaultProbe);
+      setImageProbeOcr(defaultProbe.ocrText);
     }
-
-    let mounted = true;
-    generateStarterImageSamples().then(starterImgs => {
-      if (!mounted) return;
-      setImageSamples(starterImgs);
-      saveUserTrainerImages(currentUserUid, starterImgs);
-      setImagesHydrated(true);
-      if (starterImgs.length > 0) {
-        const defaultProbe = starterImgs[8] || starterImgs[0];
-        setImageProbeSample(prev => prev || defaultProbe);
-        setImageProbeOcr(prev => prev || defaultProbe.ocrText);
-      }
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [imagesHydrated, currentUserUid]);
+  }, [imageSamples, imageProbeSample]);
 
   // Persist image dataset changes after hydration
   useEffect(() => {
@@ -450,31 +445,74 @@ export default function TrainerLab({
     const nextSamples = [...selected, ...samples];
     setSamples(nextSamples);
 
+    // Persist privately to Firestore (`user_dataset_emails`) for this user only
+    await saveUserDatasetEmailsBatch(
+      currentUserUid,
+      selected.map(s => ({
+        id: s.id,
+        subject: s.subject,
+        sender: s.sender,
+        body: s.body,
+        rawHeaders: s.rawHeaders || `From: ${s.sender}`,
+        label: s.label,
+        granularTier: s.granularTier || 'spam',
+        spamScore: s.evaluatedScore ?? 50,
+        phishingLikelihood: s.evaluatedPhishingScore ?? 40,
+        source: 'upload'
+      }))
+    );
+
     if (alsoSyncToOtherSections && onArchiveUploadedCsvEmails) {
       onArchiveUploadedCsvEmails(selected);
+    }
+
+    // Contribute anonymized copies to collective backend dataset & auto-retrain collective model
+    const idToken = await getFirebaseIdTokenSafely();
+    const backendRes = await contributeSamplesToBackend(
+      currentUserUid,
+      idToken,
+      selected,
+      {
+        trainSplitRatio: trainSplitPct / 100,
+        learningRate,
+        smoothingLambda,
+        epochs
+      },
+      true
+    );
+    if (backendRes.ok) {
+      onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
     }
 
     setPendingCsvModal(null);
 
     if (trainImmediately) {
-      if (nextSamples.length < 4) {
+      if (nextSamples.length < 4 && (!backendRes.stats || backendRes.stats.totalCombinedEmails < 4)) {
         setStatusMessage({
           type: 'error',
           text: `Inserted ${selected.length} email(s) from "${fileName}", but at least 4 total emails are required to train.`
         });
         return;
       }
-      await runTextTraining(
-        nextSamples,
-        `Inserted ${selected.length} email(s) from "${fileName}" and trained Text Model`
-      );
+      if (nextSamples.length >= 4) {
+        await runTextTraining(
+          nextSamples,
+          `Inserted ${selected.length} email(s) from "${fileName}" and trained Text Model`
+        );
+      } else if (backendRes.ok && backendRes.model) {
+        onModelUpdated(loadUserTrainedModel(currentUserUid));
+        setStatusMessage({
+          type: 'success',
+          text: `Inserted ${selected.length} email(s) from "${fileName}" and updated Collective Backend Model (${backendRes.stats?.totalCombinedEmails || 0} combined emails · ${(backendRes.model.evaluation.accuracy * 100).toFixed(1)}% Acc).`
+        });
+      }
       return;
     }
 
     setStatusMessage({
       type: 'success',
-      text: `Staged ${selected.length} persisted email(s) from "${fileName}" into Trainer Dataset${alsoSyncToOtherSections ? ' and synced to Personal Audit Stream & Batch CSV Auditor' : ''}. Click "Train Text Model" to update model weights with these emails.`,
-      action: 'train_text'
+      text: `Saved ${selected.length} email(s) from "${fileName}" privately to your Trainer Dataset${alsoSyncToOtherSections ? ', Personal Audit Stream & Batch CSV Auditor' : ''}${backendRes.ok && backendRes.stats ? `, and trained Collective Backend Model (${backendRes.stats.totalCombinedEmails} combined emails)` : ''}.`,
+      action: nextSamples.length >= 4 ? 'train_text' : undefined
     });
   };
 
@@ -576,12 +614,12 @@ export default function TrainerLab({
   };
 
   // Import samples directly from user's Personal Audit Stream
-  const handleImportFromAuditStream = () => {
+  const handleImportFromAuditStream = async () => {
     setStatusMessage(null);
     if (auditEmails.length === 0) {
       setStatusMessage({
         type: 'error',
-        text: 'Your Personal Audit Stream is currently empty. Scan emails first or load the starter corpus.'
+        text: 'Your Personal Audit Stream is currently empty. Scan emails or upload a CSV dataset first.'
       });
       return;
     }
@@ -605,7 +643,8 @@ export default function TrainerLab({
         body: mail.body,
         sender: mail.sender,
         rawHeaders: mail.rawHeaders,
-        label: inferredLabel,
+        label: mail.groundTruthLabel || inferredLabel,
+        granularTier: mail.granularTier,
         source: 'audit_stream'
       });
     });
@@ -619,85 +658,21 @@ export default function TrainerLab({
     }
 
     setSamples(prev => [...imported, ...prev]);
-    setStatusMessage({
-      type: 'success',
-      text: `Imported ${imported.length} sample(s) from your Personal Audit Stream. Re-label any row below before training.`
-    });
-  };
 
-  const handleLoadStarterCorpus = () => {
-    const existingIds = new Set(samples.map(s => s.id));
-    const missing = STARTER_TRAINING_CORPUS.filter(s => !existingIds.has(s.id));
-    if (missing.length === 0) {
-      setSamples([...STARTER_TRAINING_CORPUS]);
-    } else {
-      setSamples(prev => [...prev, ...missing]);
+    const idToken = await getFirebaseIdTokenSafely();
+    const backendRes = await contributeSamplesToBackend(currentUserUid, idToken, imported, undefined, true);
+    if (backendRes.ok) {
+      onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
     }
-    setStatusMessage({
-      type: 'success',
-      text: 'Loaded 24 balanced starter text training samples (legitimate, spam, phishing).'
-    });
-  };
 
-  const handleLoadStarterImages = async () => {
-    const starterImgs = await generateStarterImageSamples();
-    setImageSamples(prev => {
-      const existingIds = new Set(prev.map(s => s.id));
-      const missing = starterImgs.filter(s => !existingIds.has(s.id));
-      return missing.length === 0 ? [...starterImgs] : [...prev, ...missing];
-    });
     setStatusMessage({
       type: 'success',
-      text: 'Loaded 12 starter raster image samples (invoices, QR phishing lures, spam flyers, corporate diagrams).'
+      text: `Imported ${imported.length} sample(s) from your Personal Audit Stream and updated Collective Backend Corpus.`
     });
   };
 
   const handleDownloadSampleTemplate = () => {
-    const header = 'subject,body,sender,label';
-    const templateRows = [
-      {
-        subject: STARTER_TRAINING_CORPUS[0].subject,
-        body: STARTER_TRAINING_CORPUS[0].body,
-        sender: STARTER_TRAINING_CORPUS[0].sender,
-        label: 'complete legitimate'
-      },
-      {
-        subject: STARTER_TRAINING_CORPUS[1].subject,
-        body: STARTER_TRAINING_CORPUS[1].body,
-        sender: STARTER_TRAINING_CORPUS[1].sender,
-        label: 'legitimate'
-      },
-      {
-        subject: STARTER_TRAINING_CORPUS[9].subject,
-        body: STARTER_TRAINING_CORPUS[9].body,
-        sender: STARTER_TRAINING_CORPUS[9].sender,
-        label: 'spam'
-      },
-      {
-        subject: STARTER_TRAINING_CORPUS[8].subject,
-        body: STARTER_TRAINING_CORPUS[8].body,
-        sender: STARTER_TRAINING_CORPUS[8].sender,
-        label: 'highly spam'
-      },
-      {
-        subject: STARTER_TRAINING_CORPUS[20].subject,
-        body: STARTER_TRAINING_CORPUS[20].body,
-        sender: STARTER_TRAINING_CORPUS[20].sender,
-        label: 'phishing'
-      },
-      {
-        subject: STARTER_TRAINING_CORPUS[16].subject,
-        body: STARTER_TRAINING_CORPUS[16].body,
-        sender: STARTER_TRAINING_CORPUS[16].sender,
-        label: 'highly phishing'
-      }
-    ];
-    const rows = templateRows.map(s => {
-      const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-      return [esc(s.subject), esc(s.body), esc(s.sender), esc(s.label)].join(',');
-    });
-    const csv = [header, ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([CSV_SCHEMA_EXAMPLE_CONTENT], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -708,7 +683,7 @@ export default function TrainerLab({
     URL.revokeObjectURL(url);
   };
 
-  const handleAddManualSample = (e: React.FormEvent) => {
+  const handleAddManualSample = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSubject.trim() || !newBody.trim()) return;
     const classified = classifyGranularEmailTier(
@@ -733,7 +708,32 @@ export default function TrainerLab({
     setNewSender('');
     setNewBody('');
     setShowAddSample(false);
-    setStatusMessage({ type: 'success', text: `Added manual sample labeled "${newLabel}" (${GRANULAR_TIER_META[classified.granularTier].label}).` });
+
+    await saveUserDatasetEmailsBatch(currentUserUid, [
+      {
+        id: item.id,
+        subject: item.subject,
+        sender: item.sender,
+        body: item.body,
+        rawHeaders: `From: ${item.sender}`,
+        label: item.label,
+        granularTier: classified.granularTier,
+        spamScore: classified.severityScore,
+        phishingLikelihood: classified.severityScore,
+        source: 'manual'
+      }
+    ]);
+
+    const idToken = await getFirebaseIdTokenSafely();
+    const backendRes = await contributeSamplesToBackend(currentUserUid, idToken, [item], undefined, true);
+    if (backendRes.ok) {
+      onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
+    }
+
+    setStatusMessage({
+      type: 'success',
+      text: `Added manual sample labeled "${newLabel}" (${GRANULAR_TIER_META[classified.granularTier].label}) & saved privately.`
+    });
   };
 
   const handleUpdateSampleLabel = (id: string, updatedLabel: EmailLabel) => {
@@ -746,8 +746,9 @@ export default function TrainerLab({
     );
   };
 
-  const handleRemoveSample = (id: string) => {
+  const handleRemoveSample = async (id: string) => {
     setSamples(prev => prev.filter(s => s.id !== id));
+    await deleteUserDatasetEmail(currentUserUid, id);
   };
 
   const handleUpdateImageLabel = (id: string, updatedLabel: EmailLabel) => {
@@ -814,17 +815,27 @@ export default function TrainerLab({
         activeModel?.imageUnit
       );
 
-      const customUsed = targetDataset.filter(s => s.source !== 'starter').length;
-      const starterUsed = targetDataset.length - customUsed;
-      const corpusSummary =
-        customUsed > 0
-          ? `${trained.datasetSize} emails (${customUsed} yours + ${starterUsed} starter)`
-          : `${trained.datasetSize} emails`;
+      const idToken = await getFirebaseIdTokenSafely();
+      const backendRes = await contributeSamplesToBackend(
+        currentUserUid,
+        idToken,
+        targetDataset,
+        {
+          trainSplitRatio: trainSplitPct / 100,
+          learningRate,
+          smoothingLambda,
+          epochs
+        },
+        true
+      );
+      if (backendRes.ok) {
+        onCollectiveModelSynced?.(backendRes.model, backendRes.stats);
+      }
 
-      onModelUpdated(trained);
+      onModelUpdated(loadUserTrainedModel(currentUserUid) || trained);
       setStatusMessage({
         type: 'success',
-        text: `${prefixMsg || 'Text Classifier trained'} on ${corpusSummary} -> ${trained.vocabularySize} learned tokens, ${(trained.evaluation.accuracy * 100).toFixed(1)}% held-out accuracy. Active across Scanner, Batch CSV, Dashboard & Accuracy Matrix.`
+        text: `${prefixMsg || 'Text Classifier trained'} on ${trained.datasetSize} personal email(s) -> ${trained.vocabularySize} learned tokens, ${(trained.evaluation.accuracy * 100).toFixed(1)}% held-out accuracy.${backendRes.ok && backendRes.stats ? ` Also synced to Collective Backend Model (${backendRes.stats.totalCombinedEmails} combined emails).` : ''}`
       });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err?.message || 'Text model training failed.' });
@@ -835,24 +846,41 @@ export default function TrainerLab({
 
   const handleTrainTextModel = () => runTextTraining(samples);
 
-  const handleKeepOnlyCustomTextSamples = () => {
-    const customOnly = samples.filter(s => s.source !== 'starter');
-    if (customOnly.length === 0) return;
-    setSamples(customOnly);
-    setStatusMessage({
-      type: 'success',
-      text: `Removed starter baseline rows. Staging now contains strictly your ${customOnly.length} custom/uploaded sample(s). Click "Train Text Model" to train exclusively on your dataset.`,
-      action: customOnly.length >= 4 ? 'train_text' : undefined
-    });
+  const handleRetrainCollectiveModel = async () => {
+    setStatusMessage(null);
+    setIsRetrainingCollective(true);
+    try {
+      const idToken = await getFirebaseIdTokenSafely();
+      const res = await retrainCollectiveModelOnBackend(currentUserUid, idToken, {
+        trainSplitRatio: trainSplitPct / 100,
+        learningRate,
+        smoothingLambda,
+        epochs
+      });
+      onCollectiveModelSynced?.(res.model, res.stats);
+      setLiveHistory(res.model.history || []);
+      setStatusMessage({
+        type: 'success',
+        text: `Collective Backend Model trained on ${res.stats.totalCombinedEmails} combined emails across ${res.stats.contributorCount} contributor(s) -> ${(res.model.evaluation.accuracy * 100).toFixed(1)}% held-out accuracy (${res.model.vocabularySize} tokens).`
+      });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err?.message || 'Failed to train Collective Backend Model.'
+      });
+    } finally {
+      setIsRetrainingCollective(false);
+    }
   };
 
-  const handleKeepOnlyCustomImages = () => {
-    const customOnly = imageSamples.filter(s => s.source !== 'starter');
-    if (customOnly.length === 0) return;
-    setImageSamples(customOnly);
+  const handleSelectModelMode = (nextMode: ModelSelectionMode) => {
+    setActiveModelPreference(currentUserUid, nextMode);
+    setModelMode(nextMode);
+    const resolved = loadUserTrainedModel(currentUserUid);
+    onModelUpdated(resolved);
     setStatusMessage({
       type: 'success',
-      text: `Removed starter images. Staging now contains strictly your ${customOnly.length} uploaded image sample(s).`
+      text: `Active Scoring Engine preference set to "${nextMode === 'auto' ? 'Auto (Strongest Model)' : nextMode === 'collective' ? 'Collective Backend Model' : 'My Personal Model'}".`
     });
   };
 
@@ -1003,17 +1031,20 @@ export default function TrainerLab({
     e.target.value = '';
   };
 
-  // Reset to baseline heuristic weights
+  // Reset personal weights to fallback (collective or heuristic)
   const handleResetBaseline = () => {
     clearUserTrainedModel(currentUserUid);
-    onModelUpdated(null);
+    const resolvedAfterClear = loadUserTrainedModel(currentUserUid);
+    onModelUpdated(resolvedAfterClear);
     setProbeResult(null);
     setImageProbeResult(null);
-    setLiveHistory([]);
+    setLiveHistory(resolvedAfterClear?.history || []);
     setLiveImageHistory([]);
     setStatusMessage({
       type: 'success',
-      text: 'Cleared custom text & image weights for your profile. Baseline heuristic engines are now active.'
+      text: resolvedAfterClear
+        ? 'Cleared your personal weights. Collective Backend Model remains active if selected.'
+        : 'Cleared personal weights. Baseline heuristic engines are now active.'
     });
   };
 
@@ -1108,7 +1139,7 @@ export default function TrainerLab({
                 Text Engine:{' '}
                 <strong className={hasTrainedTextUnit ? 'text-[#137333]' : 'text-[#1a73e8]'}>
                   {hasTrainedTextUnit
-                    ? `Trained on ${activeModel?.datasetSize} msgs (${activeModel?.vocabularySize} tokens · ${((activeModel?.evaluation.accuracy || 0) * 100).toFixed(1)}% Acc)`
+                    ? `${activeModel?.ownerUid === 'collective-backend' ? 'Collective' : 'Personal'} (${activeModel?.datasetSize} msgs · ${activeModel?.vocabularySize} tokens · ${((activeModel?.evaluation.accuracy || 0) * 100).toFixed(1)}% Acc)`
                     : 'Baseline Heuristics'}
                 </strong>
               </span>
@@ -1123,11 +1154,9 @@ export default function TrainerLab({
               </span>
               <span aria-hidden="true">&middot;</span>
               <span>
-                Staged:{' '}
+                Your Staged Dataset:{' '}
                 <strong className="text-[#202124]">
-                  {trainerUnit === 'text'
-                    ? `${textProvenance.custom} yours + ${textProvenance.starter} starter`
-                    : `${imageProvenance.custom} yours + ${imageProvenance.starter} starter`}
+                  {trainerUnit === 'text' ? `${samples.length} emails` : `${imageSamples.length} images`}
                 </strong>
               </span>
             </div>
@@ -1219,6 +1248,78 @@ export default function TrainerLab({
             <Sparkles className="w-3.5 h-3.5" />
             <span>Train Full Pipeline (Text + Image)</span>
           </button>
+        </div>
+
+        {/* Privacy-Preserving Collective Backend Corpus & Model Mode Strip */}
+        <div className="pt-3 border-t border-[#dadce0] bg-white rounded-xl p-3.5 flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-xs font-medium text-[#202124]">
+              <Server className="w-4 h-4 text-[#1a73e8]" />
+              <span>Combined Backend Training Corpus (Cross-User Privacy Enforced)</span>
+              <InfoButton
+                title="Combined Backend Dataset & Isolation"
+                description="Uploaded datasets are stored in the backend corpus solely to train the shared classifier weights cleanly. Individual emails uploaded by one user are NEVER displayed or listed to any other user."
+                align="left"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-[#5f6368] tabular-nums">
+              <span>
+                Combined Emails: <strong className="text-[#202124]">{collectiveStats?.totalCombinedEmails ?? 0}</strong>
+              </span>
+              <span aria-hidden="true">&middot;</span>
+              <span>
+                Contributors: <strong className="text-[#202124]">{collectiveStats?.contributorCount ?? 0}</strong>
+              </span>
+              <span aria-hidden="true">&middot;</span>
+              <span>
+                Legit: <strong className="text-[#137333]">{collectiveStats?.classDistribution.legitimate ?? 0}</strong>{' '}
+                / Spam: <strong className="text-[#b06000]">{collectiveStats?.classDistribution.spam ?? 0}</strong>{' '}
+                / Phishing: <strong className="text-[#c5221f]">{collectiveStats?.classDistribution.phishing ?? 0}</strong>
+              </span>
+              {collectiveStats?.hasCollectiveModel && (
+                <>
+                  <span aria-hidden="true">&middot;</span>
+                  <span>
+                    Collective Acc: <strong className="text-[#137333]">{(collectiveStats.collectiveModelAccuracy * 100).toFixed(1)}%</strong> ({collectiveStats.vocabularySize} tokens)
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 p-1 bg-[#f8f9fa] border border-[#dadce0] rounded-full text-[11px]">
+              {([
+                { id: 'auto', label: 'Auto Mode' },
+                { id: 'collective', label: 'Collective Model' },
+                { id: 'personal', label: 'My Personal Model' }
+              ] as { id: ModelSelectionMode; label: string }[]).map(opt => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => handleSelectModelMode(opt.id)}
+                  className={`px-2.5 py-1 rounded-full font-medium transition cursor-pointer ${
+                    modelMode === opt.id
+                      ? 'bg-[#e8f0fe] text-[#1967d2]'
+                      : 'text-[#5f6368] hover:text-[#202124]'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRetrainCollectiveModel}
+              disabled={isRetrainingCollective || (collectiveStats?.totalCombinedEmails ?? 0) < 4}
+              className="px-3.5 py-2 bg-[#1a73e8] hover:bg-[#1557b0] disabled:opacity-45 text-white rounded-full text-xs font-medium transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              id="train-collective-backend-btn"
+            >
+              <Server className="w-3.5 h-3.5" />
+              <span>{isRetrainingCollective ? 'Training Backend...' : 'Train Collective Model'}</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1741,14 +1842,6 @@ export default function TrainerLab({
 
                   <button
                     type="button"
-                    onClick={handleLoadStarterCorpus}
-                    className="px-3 py-2 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-xs font-medium rounded-full transition cursor-pointer whitespace-nowrap shrink-0"
-                  >
-                    Load Starter Corpus
-                  </button>
-
-                  <button
-                    type="button"
                     onClick={() => setShowAddSample(prev => !prev)}
                     className="px-3 py-2 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-xs font-medium rounded-full transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
                   >
@@ -1760,22 +1853,11 @@ export default function TrainerLab({
                     type="button"
                     onClick={handleDownloadSampleTemplate}
                     className="px-3 py-2 bg-white hover:bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] text-xs font-medium rounded-full transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
-                    title="Download sample CSV schema template"
+                    title="Download blank CSV schema example"
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5 text-[#1e8e3e]" />
-                    <span>Template CSV</span>
+                    <span>CSV Schema Example</span>
                   </button>
-
-                  {textProvenance.custom > 0 && textProvenance.starter > 0 && (
-                    <button
-                      type="button"
-                      onClick={handleKeepOnlyCustomTextSamples}
-                      className="px-3 py-2 bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] text-xs font-medium rounded-full transition cursor-pointer whitespace-nowrap shrink-0"
-                      title="Remove starter rows so the model trains exclusively on your uploaded/imported dataset"
-                    >
-                      Keep Only My Samples ({textProvenance.custom})
-                    </button>
-                  )}
 
                   {samples.length > 0 && (
                     <button
@@ -1956,7 +2038,7 @@ export default function TrainerLab({
                   {filteredSamples.length === 0 && (
                     <tr>
                       <td colSpan={6} className="py-8 text-center text-[#5f6368]">
-                        No training samples staged. Upload a CSV/JSON file, import from your Audit Stream, or load the starter corpus.
+                        Your personal training staging table starts blank. Upload a CSV/JSON file, import from your Personal Audit Stream, or add a sample to begin.
                       </td>
                     </tr>
                   )}
@@ -2186,25 +2268,6 @@ export default function TrainerLab({
                     <span>Upload Images</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={handleLoadStarterImages}
-                    className="px-3 py-2 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-xs font-medium rounded-full transition cursor-pointer whitespace-nowrap shrink-0"
-                  >
-                    Load 12 Starter Images
-                  </button>
-
-                  {imageProvenance.custom > 0 && imageProvenance.starter > 0 && (
-                    <button
-                      type="button"
-                      onClick={handleKeepOnlyCustomImages}
-                      className="px-3 py-2 bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] text-xs font-medium rounded-full transition cursor-pointer whitespace-nowrap shrink-0"
-                      title="Remove starter images so the Image Unit trains exclusively on your uploaded images"
-                    >
-                      Keep Only My Images ({imageProvenance.custom})
-                    </button>
-                  )}
-
                   {imageSamples.length > 0 && (
                     <button
                       type="button"
@@ -2338,7 +2401,7 @@ export default function TrainerLab({
                   {filteredImageSamples.length === 0 && (
                     <tr>
                       <td colSpan={5} className="py-8 text-center text-[#5f6368]">
-                        No training images staged. Upload PNG/JPG/WEBP images or load the 12 starter visual samples.
+                        Your image training staging table starts blank. Upload PNG, JPG, or WEBP email screenshots/flyers to train the Image Training Unit.
                       </td>
                     </tr>
                   )}

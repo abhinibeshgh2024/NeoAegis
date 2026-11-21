@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { SpamMetrics, EmailRecord, LocalPredictionResult } from './types';
+import { SpamMetrics, LocalPredictionResult } from './types';
 import { loadUserTrainedModel, predictWithModel } from './src/lib/localMlEngine';
 
 // Large static lists of rules & weights
@@ -342,67 +342,3 @@ export function analyzeEmailWithModel(
 export function analyzeEmail(subject: string, body: string, headers: string): SpamMetrics {
   return analyzeEmailWithModel(subject, body, headers).metrics;
 }
-
-// Generate extensive realistic presets for testing
-export const MOCK_EMAILS: EmailRecord[] = [
-  {
-    id: 'mail-1',
-    subject: 'Action Required: Confirm wire instructions for unpaid statement_958172',
-    sender: 'accounts-paypal@secures-verify.com',
-    recipient: 'finance-clerk@agency-enterprise.com',
-    body: 'Dear customer, We detected an unauthorized attempt to transfer funds from your account. Immediately confirm your routing information and wire credentials to prevent permanent suspension. Failing to complete verification within 24 hours will cause automated system lockouts.',
-    rawHeaders: 'Received: from unverified-relay.secures-verify.com (103.21.94.13) by smtp.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 02:40:11 GMT\nFrom: PaypaI Security Team <accounts-paypal@secures-verify.com>\nTo: finance-clerk@agency-enterprise.com\nDKIM: Fail\nSPF: Fail\nSubject: Action Required: Confirm wire instructions\nContent-Disposition: attachment; filename="statement_958172.exe"',
-    timestamp: '2026-06-18T02:40:11Z',
-    isSpam: true,
-    metrics: analyzeEmail(
-      'Action Required: Confirm wire instructions for unpaid statement_958172',
-      'Dear customer, We detected an unauthorized attempt to transfer funds from your account. Immediately confirm your routing information and wire credentials to prevent permanent suspension. Failing to complete verification within 24 hours will cause automated system lockouts.',
-      'Received: from unverified-relay.secures-verify.com (103.21.94.13) by smtp.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 02:40:11 GMT\nFrom: PaypaI Security Team <accounts-paypal@secures-verify.com>\nTo: finance-clerk@agency-enterprise.com\nDKIM: Fail\nSPF: Fail\nSubject: Action Required: Confirm wire instructions\nContent-Disposition: attachment; filename="statement_958172.exe"'
-    )
-  },
-  {
-    id: 'mail-2',
-    subject: 'Urgent: CEO request for Steam gifts cards for client lunch - send immediately',
-    sender: 'chief-officer-direct@gmail-corporate-ceo.xyz',
-    recipient: 'staff-assistant@agency-enterprise.com',
-    body: 'Are you at your workbench desk right now? I am stuck in a board presentation board of members and need you to purchase 5 Steam gift cards of $100 value each. Send me the serial codes scratchoff instantly to this mail. Sent from my iPad.',
-    rawHeaders: 'Received: from smtp-out.gmail-corporate-ceo.xyz (185.191.240.5) by smtp.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 09:12:33 GMT\nFrom: CEO Office <chief-officer-direct@gmail-corporate-ceo.xyz>\nTo: staff-assistant@agency-enterprise.com\nDKIM: None\nSPF: Pass\nSubject: Urgent: CEO request for Steam gifts cards',
-    timestamp: '2026-06-18T09:12:33Z',
-    isSpam: true,
-    metrics: analyzeEmail(
-      'Urgent: CEO request for Steam gifts cards for client lunch - send immediately',
-      'Are you at your workbench desk right now? I am stuck in a board presentation board of members and need you to purchase 5 Steam gift cards of $100 value each. Send me the serial codes scratchoff instantly to this mail. Sent from my iPad.',
-      'Received: from smtp-out.gmail-corporate-ceo.xyz (185.191.240.5) by smtp.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 09:12:33 GMT\nFrom: CEO Office <chief-officer-direct@gmail-corporate-ceo.xyz>\nTo: staff-assistant@agency-enterprise.com\nDKIM: None\nSPF: Pass\nSubject: Urgent: CEO request for Steam gifts cards'
-    )
-  },
-  {
-    id: 'mail-3',
-    subject: '[Internal Project] Scope of work for Sprint Review and Q3 timelines',
-    sender: 'alex.k@agency-enterprise.com',
-    recipient: 'staff-assistant@agency-enterprise.com',
-    body: 'Hello Team, attached is the revised planning layout for our upcoming Q3 system design review. Please review the timelines and comments regarding user interface testing variables. Let me know if you need clarification before tomorrow afternoon.',
-    rawHeaders: 'Received: from corporate-mail-internal (192.168.1.15) by corporate-gateway.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 08:30:00 GMT\nFrom: Alex K <alex.k@agency-enterprise.com>\nTo: staff-assistant@agency-enterprise.com\nDKIM-Signature: dkim=pass\nReceived-SPF: pass\nSubject: [Internal Project] Scope of work for Sprint Review',
-    timestamp: '2026-06-18T08:30:00Z',
-    isSpam: false,
-    metrics: analyzeEmail(
-      '[Internal Project] Scope of work for Sprint Review and Q3 timelines',
-      'Hello Team, attached is the revised planning layout for our upcoming Q3 system design review. Please review the timelines and comments regarding user interface testing variables. Let me know if you need clarification before tomorrow afternoon.',
-      'Received: from corporate-mail-internal (192.168.1.15) by corporate-gateway.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 08:30:00 GMT\nFrom: Alex K <alex.k@agency-enterprise.com>\nTo: staff-assistant@agency-enterprise.com\nDKIM-Signature: dkim=pass\nReceived-SPF: pass\nSubject: [Internal Project] Scope of work for Sprint Review'
-    )
-  },
-  {
-    id: 'mail-4',
-    subject: 'CONGRATULATIONS: You won cash sweepstakes lucky draw prize 4921-27',
-    sender: 'no-reply-drawings-international@lottery-winner-online-co.xyz',
-    recipient: 'user-winner@agency-enterprise.com',
-    body: 'Dear lucky winner, your email address was officially selected for $500,000 lottery compensations! Click on http://bit.ly/claim-jackpot-winner immediately or fill out dynamic feedback document files to register payout instantly!!! UNLIMITED FREE GIFT CARDS TO ACTIVATE NOW.',
-    rawHeaders: 'Received: from unverified-gateway (193.109.112.5) by smtp.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 01:10:44 GMT\nFrom: Jackpot drawings <no-reply-drawings-international@lottery-winner-online-co.xyz>\nTo: user-receiver@agency-enterprise.com\nDKIM: Fail\nSPF: Fail\nSubject: CONGRATULATIONS: You won cash sweepstakes lucky draw',
-    timestamp: '2026-06-18T01:10:44Z',
-    isSpam: true,
-    metrics: analyzeEmail(
-      'CONGRATULATIONS: You won cash sweepstakes lucky draw prize 4921-27',
-      'Dear lucky winner, your email address was officially selected for $500,000 lottery compensations! Click on http://bit.ly/claim-jackpot-winner immediately or fill out dynamic feedback document files to register payout instantly!!! UNLIMITED FREE GIFT CARDS TO ACTIVATE NOW.',
-      'Received: from unverified-gateway (193.109.112.5) by smtp.agency-enterprise.com;\nDate: Thu, 18 Jun 2026 01:10:44 GMT\nFrom: Jackpot drawings <no-reply-drawings-international@lottery-winner-online-co.xyz>\nTo: user-receiver@agency-enterprise.com\nDKIM: Fail\nSPF: Fail\nSubject: CONGRATULATIONS: You won cash sweepstakes lucky draw'
-    )
-  }
-];
